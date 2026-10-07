@@ -1,0 +1,135 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: wager-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: wager_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/000001_initial_schema.up.sql:/docker-entrypoint-initdb.d/01_init.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d wager_db"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3.7
+    container_name: wager-localstack
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=sqs
+      - AWS_DEFAULT_REGION=us-east-1
+    volumes:
+      - ./scripts/init-localstack.sh:/etc/localstack/init/ready.d/init-localstack.sh
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:25.0
+    container_name: wager-keycloak
+    command: start-dev --import-realm
+    environment:
+      KEYCLOAK_ADMIN: admin
+      KEYCLOAK_ADMIN_PASSWORD: admin
+    ports:
+      - "8085:8080"
+    volumes:
+      - ./keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080; echo -e 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3; grep -q '200 OK' <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+
+  # Primary App Instance
+  app1:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wager-app-1
+    ports:
+      - "8080:8080"
+    environment:
+      PORT: 8080
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgrespassword
+      DB_NAME: wager_db
+      DB_SSLMODE: disable
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/jungle
+      JWT_SECRET: super-secret-development-key-32bytes!!
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  # Second App Instance (Demonstrates multi-instance concurrency)
+  app2:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wager-app-2
+    ports:
+      - "8081:8080"
+    environment:
+      PORT: 8080
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgrespassword
+      DB_NAME: wager_db
+      DB_SSLMODE: disable
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/jungle
+      JWT_SECRET: super-secret-development-key-32bytes!!
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+  # Third App Instance (Demonstrates multi-instance recovery & lock contention)
+  app3:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: wager-app-3
+    ports:
+      - "8082:8080"
+    environment:
+      PORT: 8080
+      DB_HOST: postgres
+      DB_PORT: 5432
+      DB_USER: postgres
+      DB_PASSWORD: postgrespassword
+      DB_NAME: wager_db
+      DB_SSLMODE: disable
+      KEYCLOAK_ISSUER: http://keycloak:8080/realms/jungle
+      JWT_SECRET: super-secret-development-key-32bytes!!
+      AWS_ENDPOINT: http://localstack:4566
+      AWS_REGION: us-east-1
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
