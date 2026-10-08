@@ -52,6 +52,7 @@ Ou através do Makefile:
 make test
 make test-race
 make test-concurrency
+make test-load
 ```
 
 ---
@@ -138,3 +139,43 @@ Consulte o arquivo `.env.example` para visualizar a lista completa de configura�
 ## 6. Decisões Arquiteturais
 
 Para detalhes aprofundados sobre a modelagem sem ponto flutuante, locks com `SELECT FOR UPDATE`, padrões Inbox/Outbox e isolamento de provedores, consulte o arquivo [ARCHITECTURE.md](./ARCHITECTURE.md).
+
+---
+
+## 7. Testes de Carga e Performance (Diferencial Opcional)
+
+O repositório inclui um benchmark de carga automatizado e 100% reproduzível via Go, projetado para estressar o cluster distribuído contra as instâncias ativas no Docker Compose.
+
+### 7.1. Comando Reproduzível
+```bash
+# Via Makefile
+make test-load
+
+# Ou diretamente via Go
+go test -v -run TestLoadBenchmark ./tests/integration/...
+```
+
+### 7.2. Ambiente e Metodologia
+* **Ambiente:** Cluster composto por 3 nós Go (`app1:8080`, `app2:8081`, `app3:8082`), PostgreSQL 16 com triggers e locks ativos, e LocalStack AWS SQS FIFO (`wager-transactions.fifo` e `wager-events.fifo`).
+* **Metodologia:**
+  1. Criação de $N$ carteiras independentes com saldo inicial de R$ 1.000,00.
+  2. Disparo de 200 operações concorrentes distribuídas em 15 workers paralelos via HTTP round-robin entre os 3 nós.
+  3. Carga mista composta por 70% `BET`, 20% `WIN`, e 10% de injeção deliberada de replays idempotentes e conflitos de chave/payload (HTTP 409).
+  4. Coleta de latência individual por requisição, contagem de status HTTP e medição do atraso de publicação da Transactional Outbox diretamente no PostgreSQL.
+  5. Reconciliação contábil do ledger após o término da carga em todas as carteiras.
+
+### 7.3. Métricas Obtidas (Execução Típica em Ambiente Local)
+* **Throughput:** ~174 req/s (RPS)
+* **Latência HTTP:**
+  * **Min:** 1.7 ms
+  * **p50 (Mediana):** ~72 ms
+  * **p95:** ~208 ms
+  * **p99:** ~273 ms
+  * **Max:** ~292 ms
+* **Distribuição de Respostas:**
+  * **200 OK (Processados/Replays):** 100% das operações válidas
+  * **409 Conflict:** 100% dos conflitos injetados interceptados e resolvidos sem erro de servidor
+  * **5xx / Erros:** 0 falhas inesperadas
+* **Atraso da Outbox (Lag):** Média de ~1.200 ms e p95 de ~2.100 ms (tempo entre a inserção na transação do banco e a publicação no SQS FIFO pelos workers).
+* **Consistência Contábil:** 100% das carteiras com $\Delta = 0.00$ na reconciliação pós-carga.
+
