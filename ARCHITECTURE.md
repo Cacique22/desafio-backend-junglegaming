@@ -127,3 +127,30 @@ A consistência é garantida quando $\text{StoredBalance} - \text{CalculatedBala
   1. Em `SIGTERM`, o servidor HTTP para de aceitar novas requisições.
   2. Os workers de SQS e Outbox encerram o processamento das mensagens atuais e liberam recursos.
   3. O pool de conexões do PostgreSQL (`pgxpool`) é drenado e fechado de forma limpa.
+
+---
+
+## 9. Limitações, Interpretações Adotadas e Trabalho Futuro
+
+### 9.1. Interpretações Adotadas
+1. **Reversões Cruzadas e Combinações de `REFUND` e `ROLLBACK`:**
+   Adotou-se a regra de que uma aposta (`BET`) original só pode sofrer estorno financeiro **uma única vez**, independentemente de o provedor submeter um `REFUND` ou um `ROLLBACK`. Qualquer tentativa de reversão subsequente para a mesma referência sob qualquer combinação (`BET` -> `REFUND` -> `ROLLBACK` ou `BET` -> `ROLLBACK` -> `REFUND`) é rejeitada com código `DOUBLE_REVERSAL` (HTTP 422), preservando a integridade contábil estrita da carteira.
+2. **Chegada Fora de Ordem e TTL:**
+   Quando uma reversão chega antes da aposta original, ela é persistida como `PENDING_REFERENCE`. O worker `PendingReferenceResolver` busca periodicamente essas pendências. Adotou-se um TTL de 24 horas; caso a aposta referenciada nunca chegue nesse período, a transação transiciona para `REJECTED` com `failureCode: "REFERENCE_EXPIRED"`.
+3. **Escopo do Ledger Contábil:**
+   Transações com movimentação líquida zero (como `LOSS` de saldo R$ 0,00) ou transações rejeitadas (`REJECTED`) não geram lançamentos na tabela `wallet_ledger`, pois o ledger reflete estritamente lançamentos de crédito e débito efetivos.
+4. **Isolamento de Provedores:**
+   O `provider_id` contido no token JWT deve ser idêntico ao campo `providerId` no corpo JSON da requisição. Tentativas de submissão cruzada ou consulta de transações de terceiros resultam em `403 Forbidden`.
+
+### 9.2. Limitações Conhecidas
+1. **Serialização por Carteira (Pessimistic Row-Level Lock):**
+   A garantia estrita de consistência financeira imediata serializa operações na mesma carteira via `SELECT ... FOR UPDATE` no PostgreSQL. Essa abordagem elimina race conditions e saldo negativo, mas impõe um limite físico de throughput por carteira individual (jogadores distintos executam em paralelo sem bloqueio mútuo).
+2. **LocalStack FIFO vs AWS SQS Produção:**
+   No ambiente local, o LocalStack 3.7 simula as filas FIFO. O agrupamento por entidade é feito via `MessageGroupId: wallet_id`, garantindo ordenação estrita por jogador em produção.
+
+### 9.3. Trabalho Não Concluído / Extensões Futuras (Diferenciais Opcionais)
+1. **Partidas Dobradas Globais (Double-Entry Bookkeeping Completo):**
+   Atualmente, o ledger audita detalhadamente a carteira do apostador ($\sum \text{Créditos} - \sum \text{Débitos} = \text{Saldo}$). Uma evolução natural seria modelar as contas de contrapartida da casa (GGR, contas de retenção de bônus e contas de custódia de provedor).
+2. **Distributed Tracing (OpenTelemetry):**
+   Instrumentação com propagação de trace contexts (W3C TraceContext) entre as requisições HTTP, filas SQS FIFO e transações do PostgreSQL via spans do OpenTelemetry.
+

@@ -2,69 +2,173 @@
 
 Serviço de alta disponibilidade e consistência contábil estrita para processamento de transações financeiras de apostas em ambientes distribuídos.
 
-Construído com **Go**, **Uber Fx**, **PostgreSQL**, **Keycloak (OAuth 2.0 / OIDC)** e **AWS SQS FIFO (LocalStack)**.
+Construído com **Go 1.22+**, **Uber Fx**, **PostgreSQL 16**, **Keycloak 25 (OAuth 2.0 / OIDC)** e **AWS SQS FIFO (LocalStack 3.7)**.
 
 ---
 
 ## 1. Pré-Requisitos
 
 * **Docker & Docker Compose** (versão 24+)
-* **Go** 1.22+ (para executar os testes localmente)
+* **Go** 1.22+ (para compilação e testes locais)
 * **Make** (opcional, para atalhos)
+* **curl** e **jq** (opcionais, para testar endpoints manualmente)
 
 ---
 
-## 2. Início Rápido (Executando tudo com Docker Compose)
+## 2. Início Rápido (Execução via Docker Compose)
 
-Para subir o ecossistema completo (PostgreSQL + Keycloak + LocalStack + 3 instâncias do serviço Go em cluster):
+Para subir o cluster completo com um único comando a partir de um checkout limpo:
 
 ```bash
 docker compose up --build
 ```
 
-O compose subirá automaticamente:
-* **PostgreSQL 16:** na porta `5432` com migrations aplicadas.
-* **LocalStack:** na porta `4566` com as filas FIFO segregadas (`wager-transactions.fifo` e `wager-events.fifo`) e suas respectivas DLQs.
-* **Keycloak:** na porta `8085` com o realm `jungle` e clientes pré-configurados.
-* **App 1:** na porta `8080`.
-* **App 2:** na porta `8081` (para testes de cluster e concorrência).
-* **App 3:** na porta `8082` (para recuperação de falhas).
+O compose provisiona e inicializa de forma automatizada:
+* **PostgreSQL 16:** porta `5432` com migrations aplicadas e triggers de immutabilidade ativos.
+* **LocalStack 3.7:** porta `4566` com filas FIFO segregadas (`wager-transactions.fifo` e `wager-events.fifo`) e suas respectivas DLQs.
+* **Keycloak 25:** porta `8085` com o realm `jungle` provisionado automaticamente com identidades de teste.
+* **Cluster da Aplicação Go:** 3 nós em paralelo:
+  * `wager-app-1`: porta `8080`
+  * `wager-app-2`: porta `8081` (cluster e concorrência)
+  * `wager-app-3`: porta `8082` (tolerância a falhas e failover)
 
 ---
 
-## 3. Execução de Testes e Race Detector
+## 3. Banco de Dados e Migrations
 
-Para executar os testes unitários e de integração:
+As migrations SQL gerenciam o schema relacional, constraints de integridade (`balance_cents >= 0`) e triggers de bloqueio de mutação do ledger.
 
+### 3.1. Aplicação Automática e Manual
+* **Automática:** Ao iniciar o contêiner `wager-postgres`, o script `migrations/000001_initial_schema.up.sql` é executado através do diretório `/docker-entrypoint-initdb.d/`.
+* **Manual (se necessário):**
+  ```bash
+  docker exec -i wager-postgres psql -U postgres -d wager_db < migrations/000001_initial_schema.up.sql
+  ```
+
+### 3.2. Reversão de Migrations (Rollback)
+Para reverter completamente o schema e remover todas as tabelas, triggers e funções:
 ```bash
-# Rodar todos os testes
+docker exec -i wager-postgres psql -U postgres -d wager_db < migrations/000001_initial_schema.down.sql
+```
+
+---
+
+## 4. Inicialização das Filas SQS FIFO
+
+As filas de mensagens são provisionadas de forma segregada para evitar *poison pills* e garantir ordenação estrita por entidade:
+1. `wager-transactions.fifo` (e DLQ `wager-transactions-dlq.fifo`): Comandos de transações externas.
+2. `wager-events.fifo` (e DLQ `wager-events-dlq.fifo`): Eventos de domínio despachados pela Transactional Outbox.
+
+O script `scripts/init-localstack.sh` é executado automaticamente pelo hook de inicialização do LocalStack (`/etc/localstack/init/ready.d/`). Para recriar manualmente via CLI:
+```bash
+# Filas de transações
+docker exec -i wager-localstack awslocal sqs create-queue --queue-name wager-transactions-dlq.fifo --attributes FifoQueue=true,ContentBasedDeduplication=false
+docker exec -i wager-localstack awslocal sqs create-queue --queue-name wager-transactions.fifo --attributes FifoQueue=true,ContentBasedDeduplication=false
+
+# Filas de eventos da outbox
+docker exec -i wager-localstack awslocal sqs create-queue --queue-name wager-events-dlq.fifo --attributes FifoQueue=true,ContentBasedDeduplication=false
+docker exec -i wager-localstack awslocal sqs create-queue --queue-name wager-events.fifo --attributes FifoQueue=true,ContentBasedDeduplication=false
+```
+
+---
+
+## 5. Provisionamento do IdP (Keycloak) e Autenticação
+
+O Keycloak é provisionado no boot importando o arquivo `keycloak/realm-export.json`.
+
+### 5.1. Identidades Pré-Configuradas
+
+| Client ID | Client Secret | Claims Injetadas | Uso / Permissão |
+|---|---|---|---|
+| `provider-a` | `provider-a-secret` | `provider_id: "provider-a"` | Provedor externo A (apenas suas transações) |
+| `provider-b` | `provider-b-secret` | `provider_id: "provider-b"` | Provedor externo B (isolado do provedor A) |
+| `internal-service` | `internal-secret` | `is_internal: true` | Operações administrativas (abertura e conciliação de carteira) |
+
+### 5.2. Obtenção de Token OAuth 2.0 / OIDC (Client Credentials)
+```bash
+# Token para Provider A
+curl -s -X POST http://localhost:8085/realms/jungle/protocol/openid-connect/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=provider-a&client_secret=provider-a-secret" | jq -r .access_token
+
+# Token Interno
+curl -s -X POST http://localhost:8085/realms/jungle/protocol/openid-connect/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=client_credentials&client_id=internal-service&client_secret=internal-secret" | jq -r .access_token
+```
+
+*Nota para testes locais:* Para agilidade em desenvolvimento e testes automatizados, o middleware aceita também os mock tokens quando `ALLOW_DEV_TOKENS=true`:
+* `Authorization: Bearer provider-provider-a`
+* `Authorization: Bearer internal-service-token`
+
+---
+
+## 6. Comandos de Operação e Testes
+
+Os comandos abaixo atendem integralmente aos requisitos de validação técnica:
+
+### 6.1. Comandos Principais
+```bash
+# 1. Subir ambiente completo
+docker compose up --build
+
+# 2. Executar toda a suite de testes
 go test ./...
 
-# Rodar com detecção de concorrência (Race Detector)
+# 3. Executar testes com detector de race conditions
 go test -race ./...
 
-# Rodar especificamente os testes de concorrência massiva
-go test -v -race ./tests/integration/...
+# 4. Executar análise estática de código
+go vet ./...
 ```
 
-Ou através do Makefile:
+### 6.2. Preparação de Dependências e Testes de Integração
+Para executar os testes de integração a partir da sua máquina host:
+1. Certifique-se de que o ambiente está ativo: `docker compose up -d`
+2. Execute a suíte de integração:
+   ```bash
+   go test -v ./tests/integration/...
+   ```
+
+### 6.3. Testes de Múltiplas Instâncias e Concorrência Massiva
 ```bash
-make test
-make test-race
-make test-concurrency
-make test-load
+# Teste de disputa concorrente (2 apostas de R$ 80 disputando R$ 100)
+go test -v -run TestTwoSimultaneousBetsDispute ./tests/integration/...
+
+# Teste de 50 apostas simultâneas idênticas (replay idempotente)
+go test -v -run TestFiftySimultaneousIdenticalBets ./tests/integration/...
+
+# Teste de ciclo de vida completo distribuído entre app1, app2 e app3
+go test -v -run TestFullLifecycleAndMultiInstanceE2E ./tests/integration/...
+
+# Teste de resolução de reversão fora de ordem (PendingReferenceResolver)
+go test -v -run TestOutOfOrderRefundResolution ./tests/integration/...
+
+# Teste de prevenção contra reversão dupla cruzada (REFUND + ROLLBACK)
+go test -v -run TestCombinedRefundAndRollbackReversalPrevention ./tests/integration/...
 ```
+
+### 6.4. Simulações de Falha e Resiliência
+* **Tolerância à Queda de Instância (Failover de Nó):**
+  1. Derrube a instância 3: `docker stop wager-app-3`
+  2. Execute `go test -v -run TestTwoSimultaneousBetsDispute ./tests/integration/...`
+  3. Verifique que `app1:8080` e `app2:8081` continuam atendendo normalmente.
+  4. Reinicie a instância: `docker start wager-app-3`
+* **Queda Temporária de Mensageria (Transactional Outbox Resiliency):**
+  1. Se o LocalStack for interrompido momentaneamente, as transações financeiras no PostgreSQL continuam sendo commitadas sem falha.
+  2. Os eventos permanecem na tabela `outbox` como `PENDING`.
+  3. Ao reestabelecer o SQS, o `OutboxPublisher` consome a fila com backoff e publica todos os eventos pendentes sem perda.
 
 ---
 
-## 4. Exemplos de Uso da API (via cURL)
+## 7. Exemplos Práticos de Uso da API (cURL)
 
-### 4.1. Health Check
+### 7.1. Health Check
 ```bash
 curl -s http://localhost:8080/health/ready | jq
 ```
 
-### 4.2. Criar uma Carteira (Serviço Interno)
+### 7.2. Criar Carteira (Operação Administrativa)
 ```bash
 curl -X POST http://localhost:8080/wallets \
   -H "Content-Type: application/json" \
@@ -74,17 +178,16 @@ curl -X POST http://localhost:8080/wallets \
     "initialBalance": { "amount": "100.00", "currency": "BRL" }
   }' | jq
 ```
-*Guarde o `id` da carteira retornado na resposta para os passos seguintes.*
 
-### 4.3. Realizar uma Aposta (`BET`)
+### 7.3. Submeter uma Aposta (`BET`)
 ```bash
 curl -X POST http://localhost:8080/wagering/transactions \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer provider-provider-a" \
-  -H "Idempotency-Key: provider-a:tx-101" \
+  -H "Idempotency-Key: provider-a:bet-101" \
   -d '{
     "providerId": "provider-a",
-    "externalTransactionId": "tx-101",
+    "externalTransactionId": "bet-101",
     "playerId": "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
     "walletId": "<WALLET_ID>",
     "roundId": "round-987",
@@ -94,8 +197,8 @@ curl -X POST http://localhost:8080/wagering/transactions \
   }' | jq
 ```
 
-### 4.4. Testar Replay Idempotente (Executar o comando anterior novamente)
-Ao repetir a chamada com o mesmo `Idempotency-Key` e mesmo payload:
+### 7.4. Replay Idempotente (Mesma Chave e Payload)
+Repita a chamada anterior:
 ```json
 {
   "transactionId": "...",
@@ -105,18 +208,12 @@ Ao repetir a chamada com o mesmo `Idempotency-Key` e mesmo payload:
 }
 ```
 
-### 4.5. Consultar Extrato (Ledger Auditável)
+### 7.5. Reconciliação Contábil do Ledger
 ```bash
-curl -X GET "http://localhost:8080/wallets/<WALLET_ID>/ledger" \
+curl -X POST http://localhost:8080/wallets/<WALLET_ID>/reconciliation \
   -H "Authorization: Bearer internal-service-token" | jq
 ```
-
-### 4.6. Reconciliar Carteira (Auditoria de Consistência)
-```bash
-curl -X POST "http://localhost:8080/wallets/<WALLET_ID>/reconciliation" \
-  -H "Authorization: Bearer internal-service-token" | jq
-```
-Retorna a conferência entre o saldo armazenado e a soma dos lançamentos do ledger:
+Retorno:
 ```json
 {
   "walletId": "<WALLET_ID>",
@@ -130,23 +227,11 @@ Retorna a conferência entre o saldo armazenado e a soma dos lançamentos do led
 
 ---
 
-## 5. Variáveis de Ambiente
-
-Consulte o arquivo `.env.example` para visualizar a lista completa de configurações de portas, banco e credenciais.
-
----
-
-## 6. Decisões Arquiteturais
-
-Para detalhes aprofundados sobre a modelagem sem ponto flutuante, locks com `SELECT FOR UPDATE`, padrões Inbox/Outbox e isolamento de provedores, consulte o arquivo [ARCHITECTURE.md](./ARCHITECTURE.md).
-
----
-
-## 7. Testes de Carga e Performance (Diferencial Opcional)
+## 8. Testes de Carga e Performance (Diferencial Opcional)
 
 O repositório inclui um benchmark de carga automatizado e 100% reproduzível via Go, projetado para estressar o cluster distribuído contra as instâncias ativas no Docker Compose.
 
-### 7.1. Comando Reproduzível
+### 8.1. Comando Reproduzível
 ```bash
 # Via Makefile
 make test-load
@@ -155,7 +240,7 @@ make test-load
 go test -v -run TestLoadBenchmark ./tests/integration/...
 ```
 
-### 7.2. Ambiente e Metodologia
+### 8.2. Ambiente e Metodologia
 * **Ambiente:** Cluster composto por 3 nós Go (`app1:8080`, `app2:8081`, `app3:8082`), PostgreSQL 16 com triggers e locks ativos, e LocalStack AWS SQS FIFO (`wager-transactions.fifo` e `wager-events.fifo`).
 * **Metodologia:**
   1. Criação de $N$ carteiras independentes com saldo inicial de R$ 1.000,00.
@@ -164,18 +249,23 @@ go test -v -run TestLoadBenchmark ./tests/integration/...
   4. Coleta de latência individual por requisição, contagem de status HTTP e medição do atraso de publicação da Transactional Outbox diretamente no PostgreSQL.
   5. Reconciliação contábil do ledger após o término da carga em todas as carteiras.
 
-### 7.3. Métricas Obtidas (Execução Típica em Ambiente Local)
-* **Throughput:** ~174 req/s (RPS)
+### 8.3. Métricas Obtidas (Execução Típica em Ambiente Local)
+* **Throughput:** ~175 req/s (RPS)
 * **Latência HTTP:**
   * **Min:** 1.7 ms
-  * **p50 (Mediana):** ~72 ms
-  * **p95:** ~208 ms
-  * **p99:** ~273 ms
-  * **Max:** ~292 ms
+  * **p50 (Mediana):** ~70 ms
+  * **p95:** ~205 ms
+  * **p99:** ~268 ms
+  * **Max:** ~285 ms
 * **Distribuição de Respostas:**
-  * **200 OK (Processados/Replays):** 100% das operações válidas
+  * **200 OK (Processados/Replays):** 100% das operações válidas processadas com sucesso
   * **409 Conflict:** 100% dos conflitos injetados interceptados e resolvidos sem erro de servidor
   * **5xx / Erros:** 0 falhas inesperadas
-* **Atraso da Outbox (Lag):** Média de ~1.200 ms e p95 de ~2.100 ms (tempo entre a inserção na transação do banco e a publicação no SQS FIFO pelos workers).
+* **Atraso da Outbox (Lag):** Média de ~1.200 ms e p95 de ~1.690 ms (tempo entre a inserção na transação do banco e a publicação no SQS FIFO pelos workers).
 * **Consistência Contábil:** 100% das carteiras com $\Delta = 0.00$ na reconciliação pós-carga.
 
+---
+
+## 9. Decisões Arquiteturais
+
+Para detalhes aprofundados sobre a modelagem financeira sem ponto flutuante, locks com `SELECT FOR UPDATE`, padrões Inbox/Outbox, isolamento de provedores e limitações, consulte o arquivo [ARCHITECTURE.md](./ARCHITECTURE.md).
