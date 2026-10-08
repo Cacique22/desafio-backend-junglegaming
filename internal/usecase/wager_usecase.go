@@ -395,17 +395,17 @@ func (uc *WagerUseCase) processRefund(ctx context.Context, tx pgx.Tx, w *wallet.
 		return uc.emitRejectedEvent(ctx, tx, dTx, "refund attributes do not match referenced bet")
 	}
 
-	// Check double refund
-	alreadyRefunded, err := uc.txRepo.HasExistingReversal(ctx, dTx.ProviderID(), refExtID, wager.KindRefund)
+	// Check double reversal (REFUND or ROLLBACK)
+	alreadyReversed, err := uc.txRepo.HasExistingReversalTx(ctx, tx, dTx.ProviderID(), refExtID)
 	if err != nil {
 		return err
 	}
-	if alreadyRefunded {
+	if alreadyReversed {
 		_ = dTx.MarkRejected(wager.FailureCodeDoubleReversal)
 		if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 			return err
 		}
-		return uc.emitRejectedEvent(ctx, tx, dTx, "bet already refunded")
+		return uc.emitRejectedEvent(ctx, tx, dTx, "bet already reversed by an existing refund or rollback")
 	}
 
 	// Credit wallet for refund
@@ -463,17 +463,17 @@ func (uc *WagerUseCase) processRollback(ctx context.Context, tx pgx.Tx, w *walle
 		return uc.emitRejectedEvent(ctx, tx, dTx, "rollback attributes do not match referenced transaction")
 	}
 
-	// Check double rollback
-	alreadyRolledBack, err := uc.txRepo.HasExistingReversal(ctx, dTx.ProviderID(), refExtID, wager.KindRollback)
+	// Check double reversal (REFUND or ROLLBACK)
+	alreadyReversed, err := uc.txRepo.HasExistingReversalTx(ctx, tx, dTx.ProviderID(), refExtID)
 	if err != nil {
 		return err
 	}
-	if alreadyRolledBack {
+	if alreadyReversed {
 		_ = dTx.MarkRejected(wager.FailureCodeDoubleReversal)
 		if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 			return err
 		}
-		return uc.emitRejectedEvent(ctx, tx, dTx, "transaction already rolled back")
+		return uc.emitRejectedEvent(ctx, tx, dTx, "transaction already reversed by an existing refund or rollback")
 	}
 
 	// Counter movement based on referenced kind:

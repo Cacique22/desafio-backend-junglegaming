@@ -483,3 +483,239 @@ func TestOutOfOrderRefundResolution(t *testing.T) {
 		t.Errorf("expected final balance 100.00, got %s", balResult.Balance.String())
 	}
 }
+
+// TestCombinedRefundAndRollbackReversalPrevention tests the critical scenario:
+// A BET is refunded, and subsequently a ROLLBACK is attempted on the same BET (or vice-versa).
+// Invariants verified:
+// 1. First reversal succeeds (wallet credited).
+// 2. Second reversal of the OTHER kind is REJECTED with DOUBLE_REVERSAL.
+// 3. No duplicate credit occurs.
+// 4. Ledger reconciliation remains 100% consistent with 0.00 difference.
+func TestCombinedRefundAndRollbackReversalPrevention(t *testing.T) {
+	baseURL := "http://localhost:8080"
+	client := &http.Client{Timeout: 5 * time.Second}
+
+	// 1. Create wallet with 100.00 BRL
+	playerID := uuid.New().String()
+	createBody, _ := json.Marshal(map[string]interface{}{
+		"playerId": playerID,
+		"initialBalance": map[string]string{
+			"amount":   "100.00",
+			"currency": "BRL",
+		},
+	})
+	reqCreate, _ := http.NewRequest("POST", baseURL+"/wallets", bytes.NewBuffer(createBody))
+	reqCreate.Header.Set("Content-Type", "application/json")
+	reqCreate.Header.Set("Authorization", "Bearer internal-service-token")
+	respCreate, err := client.Do(reqCreate)
+	if err != nil {
+		t.Skipf("service not available: %v", err)
+		return
+	}
+	defer respCreate.Body.Close()
+	var walletResp struct {
+		ID string `json:"id"`
+	}
+	_ = json.NewDecoder(respCreate.Body).Decode(&walletResp)
+	walletID := walletResp.ID
+
+	// === COMBINATION 1: BET -> REFUND -> ROLLBACK ===
+	bet1ExtID := fmt.Sprintf("bet1-%s", uuid.New().String()[:8])
+	bet1Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":            "evolution",
+		"externalTransactionId": bet1ExtID,
+		"playerId":              playerID,
+		"walletId":              walletID,
+		"roundId":               "round-c1",
+		"gameId":                "roulette",
+		"kind":                  "BET",
+		"money": map[string]string{
+			"amount":   "40.00",
+			"currency": "BRL",
+		},
+	})
+	reqBet1, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(bet1Body))
+	reqBet1.Header.Set("Content-Type", "application/json")
+	reqBet1.Header.Set("Authorization", "Bearer provider-evolution")
+	reqBet1.Header.Set("Idempotency-Key", "idem-bet1-"+bet1ExtID)
+	respBet1, _ := client.Do(reqBet1)
+	respBet1.Body.Close()
+	if respBet1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for BET 1, got %d", respBet1.StatusCode)
+	}
+
+	// REFUND on BET 1: Should SUCCEED (Crediting 40.00 back, balance returns to 100.00)
+	ref1ExtID := fmt.Sprintf("ref1-%s", uuid.New().String()[:8])
+	ref1Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":                     "evolution",
+		"externalTransactionId":          ref1ExtID,
+		"referenceExternalTransactionId": bet1ExtID,
+		"playerId":                       playerID,
+		"walletId":                       walletID,
+		"roundId":                        "round-c1",
+		"gameId":                         "roulette",
+		"kind":                           "REFUND",
+		"money": map[string]string{
+			"amount":   "40.00",
+			"currency": "BRL",
+		},
+	})
+	reqRef1, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(ref1Body))
+	reqRef1.Header.Set("Content-Type", "application/json")
+	reqRef1.Header.Set("Authorization", "Bearer provider-evolution")
+	reqRef1.Header.Set("Idempotency-Key", "idem-ref1-"+ref1ExtID)
+	respRef1, _ := client.Do(reqRef1)
+	respRef1.Body.Close()
+	if respRef1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for REFUND on BET 1, got %d", respRef1.StatusCode)
+	}
+
+	// ROLLBACK on BET 1 (the same bet!): Must be REJECTED with 422 DOUBLE_REVERSAL!
+	rb1ExtID := fmt.Sprintf("rb1-%s", uuid.New().String()[:8])
+	rb1Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":                     "evolution",
+		"externalTransactionId":          rb1ExtID,
+		"referenceExternalTransactionId": bet1ExtID,
+		"playerId":                       playerID,
+		"walletId":                       walletID,
+		"roundId":                        "round-c1",
+		"gameId":                         "roulette",
+		"kind":                           "ROLLBACK",
+		"money": map[string]string{
+			"amount":   "40.00",
+			"currency": "BRL",
+		},
+	})
+	reqRb1, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(rb1Body))
+	reqRb1.Header.Set("Content-Type", "application/json")
+	reqRb1.Header.Set("Authorization", "Bearer provider-evolution")
+	reqRb1.Header.Set("Idempotency-Key", "idem-rb1-"+rb1ExtID)
+	respRb1, err := client.Do(reqRb1)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer respRb1.Body.Close()
+	if respRb1.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("SECURITY FAILURE: expected 422 Unprocessable Entity for ROLLBACK after REFUND on same bet, got %d", respRb1.StatusCode)
+	}
+
+	// === COMBINATION 2: BET -> ROLLBACK -> REFUND ===
+	bet2ExtID := fmt.Sprintf("bet2-%s", uuid.New().String()[:8])
+	bet2Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":            "evolution",
+		"externalTransactionId": bet2ExtID,
+		"playerId":              playerID,
+		"walletId":              walletID,
+		"roundId":               "round-c2",
+		"gameId":                "roulette",
+		"kind":                  "BET",
+		"money": map[string]string{
+			"amount":   "30.00",
+			"currency": "BRL",
+		},
+	})
+	reqBet2, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(bet2Body))
+	reqBet2.Header.Set("Content-Type", "application/json")
+	reqBet2.Header.Set("Authorization", "Bearer provider-evolution")
+	reqBet2.Header.Set("Idempotency-Key", "idem-bet2-"+bet2ExtID)
+	respBet2, err := client.Do(reqBet2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	respBet2.Body.Close()
+	if respBet2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for BET 2, got %d", respBet2.StatusCode)
+	}
+
+	// ROLLBACK on BET 2: Should SUCCEED (Crediting 30.00 back, balance returns to 100.00)
+	rb2ExtID := fmt.Sprintf("rb2-%s", uuid.New().String()[:8])
+	rb2Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":                     "evolution",
+		"externalTransactionId":          rb2ExtID,
+		"referenceExternalTransactionId": bet2ExtID,
+		"playerId":                       playerID,
+		"walletId":                       walletID,
+		"roundId":                        "round-c2",
+		"gameId":                         "roulette",
+		"kind":                           "ROLLBACK",
+		"money": map[string]string{
+			"amount":   "30.00",
+			"currency": "BRL",
+		},
+	})
+	reqRb2, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(rb2Body))
+	reqRb2.Header.Set("Content-Type", "application/json")
+	reqRb2.Header.Set("Authorization", "Bearer provider-evolution")
+	reqRb2.Header.Set("Idempotency-Key", "idem-rb2-"+rb2ExtID)
+	respRb2, err := client.Do(reqRb2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	respRb2.Body.Close()
+	if respRb2.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for ROLLBACK on BET 2, got %d", respRb2.StatusCode)
+	}
+
+	// REFUND on BET 2 (the same bet!): Must be REJECTED with 422 DOUBLE_REVERSAL!
+	ref2ExtID := fmt.Sprintf("ref2-%s", uuid.New().String()[:8])
+	ref2Body, _ := json.Marshal(map[string]interface{}{
+		"providerId":                     "evolution",
+		"externalTransactionId":          ref2ExtID,
+		"referenceExternalTransactionId": bet2ExtID,
+		"playerId":                       playerID,
+		"walletId":                       walletID,
+		"roundId":                        "round-c2",
+		"gameId":                         "roulette",
+		"kind":                           "REFUND",
+		"money": map[string]string{
+			"amount":   "30.00",
+			"currency": "BRL",
+		},
+	})
+	reqRef2, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(ref2Body))
+	reqRef2.Header.Set("Content-Type", "application/json")
+	reqRef2.Header.Set("Authorization", "Bearer provider-evolution")
+	reqRef2.Header.Set("Idempotency-Key", "idem-ref2-"+ref2ExtID)
+	respRef2, err := client.Do(reqRef2)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer respRef2.Body.Close()
+	if respRef2.StatusCode != http.StatusUnprocessableEntity {
+		t.Errorf("SECURITY FAILURE: expected 422 Unprocessable Entity for REFUND after ROLLBACK on same bet, got %d", respRef2.StatusCode)
+	}
+
+	// Final Balance Check: MUST BE EXACTLY 100.00 BRL!
+	// (Initial 100 - 40 + 40 - 30 + 30 = 100.00)
+	reqFinal, _ := http.NewRequest("GET", baseURL+"/wallets/"+walletID, nil)
+	reqFinal.Header.Set("Authorization", "Bearer internal-service-token")
+	respFinal, err := client.Do(reqFinal)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer respFinal.Body.Close()
+	var finalWallet struct {
+		Balance money.Money `json:"balance"`
+	}
+	_ = json.NewDecoder(respFinal.Body).Decode(&finalWallet)
+	if finalWallet.Balance.String() != "100.00" {
+		t.Errorf("expected final balance 100.00, got %s", finalWallet.Balance.String())
+	}
+
+	// Final Reconciliation Check:
+	reqRec, _ := http.NewRequest("POST", baseURL+"/wallets/"+walletID+"/reconciliation", nil)
+	reqRec.Header.Set("Authorization", "Bearer internal-service-token")
+	respRec, err := client.Do(reqRec)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer respRec.Body.Close()
+	var recResp struct {
+		Consistent bool        `json:"consistent"`
+		Difference money.Money `json:"difference"`
+	}
+	_ = json.NewDecoder(respRec.Body).Decode(&recResp)
+	if !recResp.Consistent || recResp.Difference.String() != "0.00" {
+		t.Errorf("expected consistent ledger reconciliation with 0.00 difference, got %s", recResp.Difference.String())
+	}
+}

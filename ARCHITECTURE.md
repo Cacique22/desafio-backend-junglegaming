@@ -92,7 +92,7 @@ A consistência é garantida quando $\text{StoredBalance} - \text{CalculatedBala
 * Se um estorno ou rollback chegar antes da aposta original, ele é gravado no banco como `PENDING_REFERENCE`.
 * Um worker em background (`PendingReferenceResolver`) consulta periodicamente as transações pendentes. Quando a aposta original é processada, o estorno é aplicado e transiciona para `PROCESSED`.
 * Caso a referência não chegue antes do TTL (24h), a transação é finalizada como `REJECTED` com `failureCode: "REFERENCE_EXPIRED"`.
-* **Proteção contra Dupla Reversão:** A tabela é consultada garantindo que nenhuma transação referenciada receba dois estornos bem-sucedidos do mesmo tipo (`HasExistingReversal`).
+* **Proteção contra Reversão Dupla e Combinações Cruzadas:** A tabela é consultada (`HasExistingReversalTx` com filtro `kind IN ('REFUND', 'ROLLBACK')` e status `PROCESSED`) sob o lock transacional da carteira (`SELECT ... FOR UPDATE`). Isso garante que nenhuma transação referenciada (`BET`) receba devolução duplicada de fundos sob **qualquer combinação** (`BET` -> `REFUND` -> `ROLLBACK`, `BET` -> `ROLLBACK` -> `REFUND` ou reversões do mesmo tipo). Caso já exista qualquer estorno processado para a referência, qualquer reversão subsequente é rejeitada de forma atômica e imediatamente com código de falha `DOUBLE_REVERSAL` (HTTP 422), preservando a coerência financeira e impedindo crédito duplicado.
 
 ---
 

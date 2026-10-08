@@ -46,7 +46,7 @@ Qualquer alteração ou novo código deve respeitar rigorosamente as decisões d
 1. **Estados:** `PENDING`, `PROCESSED`, `PENDING_REFERENCE`, `REJECTED`.
 2. **Estorno Fora de Ordem:** Se um `REFUND` ou `ROLLBACK` chegar antes da aposta original (`BET`), o status deve ser gravado como `PENDING_REFERENCE`.
 3. **Worker em Background:** `PendingReferenceResolver` busca periodicamente transações `PENDING_REFERENCE` e as processa quando a aposta original estiver confirmada, respeitando o TTL de 24 horas.
-4. **Prevenção a Duplo Estorno:** Uma transação nunca pode receber dois estornos do mesmo tipo (`HasExistingReversal`).
+4. **Prevenção a Duplo Estorno e Combinações Cruzadas:** Uma transação `BET` nunca pode receber mais de uma reversão (seja `REFUND` ou `ROLLBACK`). A verificação `HasExistingReversalTx` consulta `kind IN ('REFUND', 'ROLLBACK')` sob o lock da carteira; qualquer reversão subsequente é rejeitada com `DOUBLE_REVERSAL`.
 
 ### 2.6. Mensageria: Padrões Outbox & Inbox
 1. **Transactional Outbox:** Eventos de domínio são persistidos na tabela `outbox` na mesma transação atômica do PostgreSQL.

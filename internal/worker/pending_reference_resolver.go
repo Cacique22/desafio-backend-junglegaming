@@ -129,6 +129,35 @@ func (r *PendingReferenceResolver) processSinglePending(ctx context.Context, pTx
 		return
 	}
 
+	// Prevent double reversal if another reversal was already applied to this reference
+	alreadyReversed, err := r.txRepo.HasExistingReversalTx(ctx, sqlTx, pTx.ProviderID(), refExtID)
+	if err != nil {
+		return
+	}
+	if alreadyReversed {
+		_ = pTx.MarkRejected(wager.FailureCodeDoubleReversal)
+		_ = r.txRepo.Update(ctx, sqlTx, pTx)
+		rejEvt, _ := events.NewEnvelope(
+			events.TypeWagerTransactionRejected,
+			pTx.ID().String(),
+			pTx.ID().String(),
+			nil,
+			1,
+			events.WagerTransactionRejectedPayload{
+				TransactionID: pTx.ID().String(),
+				ProviderID:    pTx.ProviderID(),
+				FailureCode:   string(wager.FailureCodeDoubleReversal),
+				Reason:        "transaction already reversed by an existing refund or rollback",
+				Kind:          string(pTx.Kind()),
+				Money:         pTx.Money(),
+			},
+		)
+		_ = r.outboxRepo.Insert(ctx, sqlTx, rejEvt)
+		_ = sqlTx.Commit(ctx)
+		r.logger.Warn("rejected pending reference due to existing reversal", "txId", pTx.ID())
+		return
+	}
+
 	var (
 		beforeBal, afterBal money.Money
 		dir                 wallet.Direction

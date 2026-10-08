@@ -179,18 +179,36 @@ func (r *TransactionRepository) FindByID(ctx context.Context, id uuid.UUID) (*wa
 	return r.scanRow(r.pool.QueryRow(ctx, query, id))
 }
 
-// HasExistingReversal checks if a processed reversal already exists for this referenced transaction.
-func (r *TransactionRepository) HasExistingReversal(ctx context.Context, providerID, refExternalID string, kind wager.Kind) (bool, error) {
+// HasExistingReversal checks if any processed reversal (REFUND or ROLLBACK) already exists for this referenced transaction.
+func (r *TransactionRepository) HasExistingReversal(ctx context.Context, providerID, refExternalID string) (bool, error) {
 	query := `
 		SELECT COUNT(*)
 		FROM wager_transactions
 		WHERE provider_id = $1
 		  AND reference_external_transaction_id = $2
-		  AND kind = $3
+		  AND kind IN ('REFUND', 'ROLLBACK')
 		  AND status = 'PROCESSED'
 	`
 	var count int
-	err := r.pool.QueryRow(ctx, query, providerID, refExternalID, string(kind)).Scan(&count)
+	err := r.pool.QueryRow(ctx, query, providerID, refExternalID).Scan(&count)
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// HasExistingReversalTx checks if any processed reversal already exists within an active SQL transaction.
+func (r *TransactionRepository) HasExistingReversalTx(ctx context.Context, tx pgx.Tx, providerID, refExternalID string) (bool, error) {
+	query := `
+		SELECT COUNT(*)
+		FROM wager_transactions
+		WHERE provider_id = $1
+		  AND reference_external_transaction_id = $2
+		  AND kind IN ('REFUND', 'ROLLBACK')
+		  AND status = 'PROCESSED'
+	`
+	var count int
+	err := tx.QueryRow(ctx, query, providerID, refExternalID).Scan(&count)
 	if err != nil {
 		return false, err
 	}
