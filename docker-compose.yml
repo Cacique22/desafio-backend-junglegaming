@@ -71,6 +71,8 @@ services:
       AWS_ENDPOINT: http://localstack:4566
       AWS_REGION: us-east-1
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      SQS_COMMAND_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
     depends_on:
       postgres:
         condition: service_healthy
@@ -98,6 +100,8 @@ services:
       AWS_ENDPOINT: http://localstack:4566
       AWS_REGION: us-east-1
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      SQS_COMMAND_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
     depends_on:
       postgres:
         condition: service_healthy
@@ -125,6 +129,8 @@ services:
       AWS_ENDPOINT: http://localstack:4566
       AWS_REGION: us-east-1
       SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_OUTBOX_QUEUE_URL: http://localstack:4566/000000000000/wager-events.fifo
+      SQS_COMMAND_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
     depends_on:
       postgres:
         condition: service_healthy

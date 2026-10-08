@@ -73,7 +73,7 @@ func (r *LedgerRepository) ListByWallet(
 	var cursorTime time.Time
 	if cursor != "" {
 		decoded, err := base64.StdEncoding.DecodeString(cursor)
-		if == nil {
+		if err == nil {
 			parsed, parseErr := time.Parse(time.RFC3339Nano, string(decoded))
 			if parseErr == nil {
 				cursorTime = parsed
@@ -106,11 +106,11 @@ func (r *LedgerRepository) ListByWallet(
 	var items []LedgerItemDTO
 	for rows.Next() {
 		var (
-			id, wID, txID                              uuid.UUID
-			dir                                        string
-			amountCents, beforeCents, afterCents       int64
-			currency                                   string
-			createdAt                                  time.Time
+			id, wID, txID                        uuid.UUID
+			dir                                  string
+			amountCents, beforeCents, afterCents int64
+			currency                             string
+			createdAt                            time.Time
 		)
 		if err := rows.Scan(&id, &wID, &txID, &dir, &amountCents, &currency, &beforeCents, &afterCents, &createdAt); err != nil {
 			return nil, "", err

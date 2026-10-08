@@ -5,7 +5,11 @@ import (
 	"errors"
 	"fmt"
 
+	"strings"
+
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/canonical"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/events"
@@ -21,11 +25,11 @@ var (
 )
 
 type WagerUseCase struct {
-	pool        *pgxpool.Pool
-	walletRepo  *repository.WalletRepository
-	ledgerRepo  *repository.LedgerRepository
-	txRepo      *repository.TransactionRepository
-	outboxRepo  *repository.OutboxRepository
+	pool       *pgxpool.Pool
+	walletRepo *repository.WalletRepository
+	ledgerRepo *repository.LedgerRepository
+	txRepo     *repository.TransactionRepository
+	outboxRepo *repository.OutboxRepository
 }
 
 func NewWagerUseCase(
@@ -45,24 +49,24 @@ func NewWagerUseCase(
 }
 
 type ProcessWagerInput struct {
-	ProviderID                      string      `json:"providerId"`
+	ProviderID                     string      `json:"providerId"`
 	ExternalTransactionID          string      `json:"externalTransactionId"`
-	IdempotencyKey                  string      `json:"idempotencyKey"`
-	PlayerID                        uuid.UUID   `json:"playerId"`
-	WalletID                        uuid.UUID   `json:"walletId"`
-	RoundID                         string      `json:"roundId"`
-	GameID                          string      `json:"gameId"`
-	Kind                            wager.Kind  `json:"kind"`
-	Money                           money.Money `json:"money"`
+	IdempotencyKey                 string      `json:"idempotencyKey"`
+	PlayerID                       uuid.UUID   `json:"playerId"`
+	WalletID                       uuid.UUID   `json:"walletId"`
+	RoundID                        string      `json:"roundId"`
+	GameID                         string      `json:"gameId"`
+	Kind                           wager.Kind  `json:"kind"`
+	Money                          money.Money `json:"money"`
 	ReferenceExternalTransactionID *string     `json:"referenceExternalTransactionId,omitempty"`
 }
 
 type ProcessWagerOutput struct {
-	TransactionID   uuid.UUID         `json:"transactionId"`
-	Status          wager.Status      `json:"status"`
-	Balance         *money.Money      `json:"balance,omitempty"`
-	FailureCode     *wager.FailureCode `json:"failureCode,omitempty"`
-	IdempotentReplay bool             `json:"idempotentReplay"`
+	TransactionID    uuid.UUID          `json:"transactionId"`
+	Status           wager.Status       `json:"status"`
+	Balance          *money.Money       `json:"balance,omitempty"`
+	FailureCode      *wager.FailureCode `json:"failureCode,omitempty"`
+	IdempotentReplay bool               `json:"idempotentReplay"`
 }
 
 // Execute processes a wager operation idempotently and atomically with strict financial guarantees.
@@ -158,6 +162,37 @@ func (uc *WagerUseCase) Execute(ctx context.Context, input ProcessWagerInput) (*
 		return nil, err
 	}
 
+	// 6.1. Re-check Idempotency inside the serialized lock to catch concurrent identical requests
+	existingByKeyTx, err := uc.txRepo.FindByIdempotencyKeyTx(ctx, sqlTx, input.IdempotencyKey)
+	if err == nil && existingByKeyTx != nil {
+		_ = sqlTx.Rollback(ctx)
+		if existingByKeyTx.PayloadHash() != payloadHash {
+			return nil, wager.ErrIdempotencyConflict
+		}
+		return &ProcessWagerOutput{
+			TransactionID:    existingByKeyTx.ID(),
+			Status:           existingByKeyTx.Status(),
+			Balance:          existingByKeyTx.BalanceSnapshot(),
+			FailureCode:      existingByKeyTx.FailureCode(),
+			IdempotentReplay: true,
+		}, nil
+	}
+
+	existingByExtTx, err := uc.txRepo.FindByProviderAndExternalIDTx(ctx, sqlTx, input.ProviderID, input.ExternalTransactionID)
+	if err == nil && existingByExtTx != nil {
+		_ = sqlTx.Rollback(ctx)
+		if existingByExtTx.IdempotencyKey() != input.IdempotencyKey {
+			return nil, wager.ErrIdempotencyConflict
+		}
+		return &ProcessWagerOutput{
+			TransactionID:    existingByExtTx.ID(),
+			Status:           existingByExtTx.Status(),
+			Balance:          existingByExtTx.BalanceSnapshot(),
+			FailureCode:      existingByExtTx.FailureCode(),
+			IdempotentReplay: true,
+		}, nil
+	}
+
 	if w.PlayerID() != input.PlayerID {
 		return nil, ErrPlayerMismatch
 	}
@@ -181,11 +216,40 @@ func (uc *WagerUseCase) Execute(ctx context.Context, input ProcessWagerInput) (*
 		return nil, wager.ErrInvalidKind
 	}
 	if err != nil {
+		if isUniqueViolation(err) {
+			_ = sqlTx.Rollback(ctx)
+			if existing, qErr := uc.txRepo.FindByIdempotencyKey(ctx, input.IdempotencyKey); qErr == nil && existing != nil {
+				if existing.PayloadHash() != payloadHash {
+					return nil, wager.ErrIdempotencyConflict
+				}
+				return &ProcessWagerOutput{
+					TransactionID:    existing.ID(),
+					Status:           existing.Status(),
+					Balance:          existing.BalanceSnapshot(),
+					FailureCode:      existing.FailureCode(),
+					IdempotentReplay: true,
+				}, nil
+			}
+		}
 		return nil, err
 	}
 
 	// 8. Commit atomic transaction
 	if err := sqlTx.Commit(ctx); err != nil {
+		if isUniqueViolation(err) {
+			if existing, qErr := uc.txRepo.FindByIdempotencyKey(ctx, input.IdempotencyKey); qErr == nil && existing != nil {
+				if existing.PayloadHash() != payloadHash {
+					return nil, wager.ErrIdempotencyConflict
+				}
+				return &ProcessWagerOutput{
+					TransactionID:    existing.ID(),
+					Status:           existing.Status(),
+					Balance:          existing.BalanceSnapshot(),
+					FailureCode:      existing.FailureCode(),
+					IdempotentReplay: true,
+				}, nil
+			}
+		}
 		return nil, fmt.Errorf("failed to commit wager transaction: %w", err)
 	}
 
@@ -217,6 +281,12 @@ func (uc *WagerUseCase) processBet(ctx context.Context, tx pgx.Tx, w *wallet.Wal
 		return err
 	}
 
+	// Mark transaction PROCESSED
+	_ = dTx.MarkProcessed(afterBal)
+	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
+		return err
+	}
+
 	// Append immutable ledger entry
 	ledgerEntry, err := wallet.NewLedgerEntry(
 		w.ID(), dTx.ID(), wallet.DirectionDebit, dTx.Money(), beforeBal, afterBal,
@@ -225,12 +295,6 @@ func (uc *WagerUseCase) processBet(ctx context.Context, tx pgx.Tx, w *wallet.Wal
 		return err
 	}
 	if err := uc.ledgerRepo.Insert(ctx, tx, ledgerEntry); err != nil {
-		return err
-	}
-
-	// Mark transaction PROCESSED
-	_ = dTx.MarkProcessed(afterBal)
-	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 		return err
 	}
 
@@ -248,6 +312,11 @@ func (uc *WagerUseCase) processWin(ctx context.Context, tx pgx.Tx, w *wallet.Wal
 		return err
 	}
 
+	_ = dTx.MarkProcessed(afterBal)
+	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
+		return err
+	}
+
 	ledgerEntry, err := wallet.NewLedgerEntry(
 		w.ID(), dTx.ID(), wallet.DirectionCredit, dTx.Money(), beforeBal, afterBal,
 	)
@@ -255,11 +324,6 @@ func (uc *WagerUseCase) processWin(ctx context.Context, tx pgx.Tx, w *wallet.Wal
 		return err
 	}
 	if err := uc.ledgerRepo.Insert(ctx, tx, ledgerEntry); err != nil {
-		return err
-	}
-
-	_ = dTx.MarkProcessed(afterBal)
-	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 		return err
 	}
 
@@ -354,6 +418,12 @@ func (uc *WagerUseCase) processRefund(ctx context.Context, tx pgx.Tx, w *wallet.
 		return err
 	}
 
+	dTx.SetResolvedReference(refTx.ID())
+	_ = dTx.MarkProcessed(afterBal)
+	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
+		return err
+	}
+
 	ledgerEntry, err := wallet.NewLedgerEntry(
 		w.ID(), dTx.ID(), wallet.DirectionCredit, dTx.Money(), beforeBal, afterBal,
 	)
@@ -361,12 +431,6 @@ func (uc *WagerUseCase) processRefund(ctx context.Context, tx pgx.Tx, w *wallet.
 		return err
 	}
 	if err := uc.ledgerRepo.Insert(ctx, tx, ledgerEntry); err != nil {
-		return err
-	}
-
-	dTx.SetResolvedReference(refTx.ID())
-	_ = dTx.MarkProcessed(afterBal)
-	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 		return err
 	}
 
@@ -449,6 +513,12 @@ func (uc *WagerUseCase) processRollback(ctx context.Context, tx pgx.Tx, w *walle
 		return err
 	}
 
+	dTx.SetResolvedReference(refTx.ID())
+	_ = dTx.MarkProcessed(afterBal)
+	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
+		return err
+	}
+
 	ledgerEntry, err := wallet.NewLedgerEntry(
 		w.ID(), dTx.ID(), dir, dTx.Money(), beforeBal, afterBal,
 	)
@@ -456,12 +526,6 @@ func (uc *WagerUseCase) processRollback(ctx context.Context, tx pgx.Tx, w *walle
 		return err
 	}
 	if err := uc.ledgerRepo.Insert(ctx, tx, ledgerEntry); err != nil {
-		return err
-	}
-
-	dTx.SetResolvedReference(refTx.ID())
-	_ = dTx.MarkProcessed(afterBal)
-	if err := uc.txRepo.Create(ctx, tx, dTx); err != nil {
 		return err
 	}
 
@@ -581,4 +645,15 @@ func (uc *WagerUseCase) emitRejectedEvent(ctx context.Context, tx pgx.Tx, dTx *w
 		return err
 	}
 	return uc.outboxRepo.Insert(ctx, tx, rejEvt)
+}
+
+func isUniqueViolation(err error) bool {
+	if err == nil {
+		return false
+	}
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		return true
+	}
+	return strings.Contains(err.Error(), "23505") || strings.Contains(err.Error(), "duplicate key")
 }

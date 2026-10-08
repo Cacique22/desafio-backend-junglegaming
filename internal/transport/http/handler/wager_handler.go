@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -15,26 +16,28 @@ import (
 )
 
 type WagerHandler struct {
+	logger       *slog.Logger
 	wagerUseCase *usecase.WagerUseCase
 	txRepo       *repository.TransactionRepository
 }
 
-func NewWagerHandler(wagerUseCase *usecase.WagerUseCase, txRepo *repository.TransactionRepository) *WagerHandler {
+func NewWagerHandler(logger *slog.Logger, wagerUseCase *usecase.WagerUseCase, txRepo *repository.TransactionRepository) *WagerHandler {
 	return &WagerHandler{
+		logger:       logger,
 		wagerUseCase: wagerUseCase,
 		txRepo:       txRepo,
 	}
 }
 
 type ProcessWagerRequest struct {
-	ProviderID                      string      `json:"providerId"`
+	ProviderID                     string      `json:"providerId"`
 	ExternalTransactionID          string      `json:"externalTransactionId"`
-	PlayerID                        string      `json:"playerId"`
-	WalletID                        string      `json:"walletId"`
-	RoundID                         string      `json:"roundId"`
-	GameID                          string      `json:"gameId"`
-	Kind                            string      `json:"kind"`
-	Money                           money.Money `json:"money"`
+	PlayerID                       string      `json:"playerId"`
+	WalletID                       string      `json:"walletId"`
+	RoundID                        string      `json:"roundId"`
+	GameID                         string      `json:"gameId"`
+	Kind                           string      `json:"kind"`
+	Money                          money.Money `json:"money"`
 	ReferenceExternalTransactionID *string     `json:"referenceExternalTransactionId,omitempty"`
 }
 
@@ -71,15 +74,15 @@ func (h *WagerHandler) Process(w http.ResponseWriter, r *http.Request) {
 	}
 
 	out, err := h.wagerUseCase.Execute(r.Context(), usecase.ProcessWagerInput{
-		ProviderID:                      req.ProviderID,
+		ProviderID:                     req.ProviderID,
 		ExternalTransactionID:          req.ExternalTransactionID,
-		IdempotencyKey:                  idempotencyKey,
-		PlayerID:                        playerUUID,
-		WalletID:                        walletUUID,
-		RoundID:                         req.RoundID,
-		GameID:                          req.GameID,
-		Kind:                            wager.Kind(req.Kind),
-		Money:                           req.Money,
+		IdempotencyKey:                 idempotencyKey,
+		PlayerID:                       playerUUID,
+		WalletID:                       walletUUID,
+		RoundID:                        req.RoundID,
+		GameID:                         req.GameID,
+		Kind:                           wager.Kind(req.Kind),
+		Money:                          req.Money,
 		ReferenceExternalTransactionID: req.ReferenceExternalTransactionID,
 	})
 	if err != nil {
@@ -95,7 +98,8 @@ func (h *WagerHandler) Process(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusBadRequest)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to process wager", "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -125,7 +129,8 @@ func (h *WagerHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to get transaction by ID", "transactionId", txID, "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -157,7 +162,8 @@ func (h *WagerHandler) GetByExternalID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"transaction not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to get transaction by external ID", "providerId", providerID, "externalId", externalID, "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 

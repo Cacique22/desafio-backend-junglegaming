@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/events"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wallet"
 	"github.com/junglegaming/backend-challenge-go/internal/infra/repository"
@@ -21,7 +22,7 @@ type PendingReferenceResolver struct {
 	ledgerRepo *repository.LedgerRepository
 	outboxRepo *repository.OutboxRepository
 	ttl        time.Duration
-	stopCh     chan struct{}
+	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 }
 
@@ -41,17 +42,20 @@ func NewPendingReferenceResolver(
 		ledgerRepo: ledgerRepo,
 		outboxRepo: outboxRepo,
 		ttl:        24 * time.Hour,
-		stopCh:     make(chan struct{}),
 	}
 }
 
-func (r *PendingReferenceResolver) Start(ctx context.Context) {
+func (r *PendingReferenceResolver) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	r.cancel = cancel
 	r.wg.Add(1)
 	go r.run(ctx)
 }
 
 func (r *PendingReferenceResolver) Stop(ctx context.Context) error {
-	close(r.stopCh)
+	if r.cancel != nil {
+		r.cancel()
+	}
 	c := make(chan struct{})
 	go func() {
 		r.wg.Wait()
@@ -74,8 +78,6 @@ func (r *PendingReferenceResolver) run(ctx context.Context) {
 
 	for {
 		select {
-		case <-r.stopCh:
-			return
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
@@ -159,6 +161,12 @@ func (r *PendingReferenceResolver) processSinglePending(ctx context.Context, pTx
 		return
 	}
 
+	pTx.SetResolvedReference(refTx.ID())
+	_ = pTx.MarkProcessed(afterBal)
+	if err := r.txRepo.Update(ctx, sqlTx, pTx); err != nil {
+		return
+	}
+
 	ledgerEntry, err := wallet.NewLedgerEntry(
 		w.ID(), pTx.ID(), dir, pTx.Money(), beforeBal, afterBal,
 	)
@@ -166,12 +174,6 @@ func (r *PendingReferenceResolver) processSinglePending(ctx context.Context, pTx
 		return
 	}
 	if err := r.ledgerRepo.Insert(ctx, sqlTx, ledgerEntry); err != nil {
-		return
-	}
-
-	pTx.SetResolvedReference(refTx.ID())
-	_ = pTx.MarkProcessed(afterBal)
-	if err := r.txRepo.Update(ctx, sqlTx, pTx); err != nil {
 		return
 	}
 

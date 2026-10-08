@@ -14,6 +14,7 @@ import (
 	sqsTypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/junglegaming/backend-challenge-go/internal/domain/events"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/money"
 	"github.com/junglegaming/backend-challenge-go/internal/domain/wager"
 	"github.com/junglegaming/backend-challenge-go/internal/infra/repository"
@@ -28,7 +29,7 @@ type SQSConsumer struct {
 	sqsClient    *sqs.Client
 	queueURL     string
 	consumerName string
-	stopCh       chan struct{}
+	cancel       context.CancelFunc
 	wg           sync.WaitGroup
 }
 
@@ -48,41 +49,44 @@ func NewSQSConsumer(
 		sqsClient:    sqsClient,
 		queueURL:     queueURL,
 		consumerName: "wager-sqs-consumer",
-		stopCh:       make(chan struct{}),
 	}
 }
 
 type SQSMessageEnvelope struct {
-	MessageID  string          `json:"messageId"`
-	Type       string          `json:"type"`
-	OccurredAt string          `json:"occurredAt"`
+	MessageID  string           `json:"messageId"`
+	Type       string           `json:"type"`
+	OccurredAt string           `json:"occurredAt"`
 	Data       WagerMessageData `json:"data"`
 }
 
 type WagerMessageData struct {
-	ProviderID                      string      `json:"providerId"`
+	ProviderID                     string      `json:"providerId"`
 	ExternalTransactionID          string      `json:"externalTransactionId"`
-	IdempotencyKey                  string      `json:"idempotencyKey"`
-	PlayerID                        string      `json:"playerId"`
-	WalletID                        string      `json:"walletId"`
-	RoundID                         string      `json:"roundId"`
-	GameID                          string      `json:"gameId"`
-	Kind                            string      `json:"kind"`
-	Money                           money.Money `json:"money"`
+	IdempotencyKey                 string      `json:"idempotencyKey"`
+	PlayerID                       string      `json:"playerId"`
+	WalletID                       string      `json:"walletId"`
+	RoundID                        string      `json:"roundId"`
+	GameID                         string      `json:"gameId"`
+	Kind                           string      `json:"kind"`
+	Money                          money.Money `json:"money"`
 	ReferenceExternalTransactionID *string     `json:"referenceExternalTransactionId,omitempty"`
 }
 
-func (c *SQSConsumer) Start(ctx context.Context) {
+func (c *SQSConsumer) Start() {
 	if c.sqsClient == nil || c.queueURL == "" {
 		c.logger.Info("sqs consumer disabled (no client or queueURL configured)")
 		return
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	c.cancel = cancel
 	c.wg.Add(1)
 	go c.run(ctx)
 }
 
 func (c *SQSConsumer) Stop(ctx context.Context) error {
-	close(c.stopCh)
+	if c.cancel != nil {
+		c.cancel()
+	}
 	done := make(chan struct{})
 	go func() {
 		c.wg.Wait()
@@ -104,8 +108,6 @@ func (c *SQSConsumer) run(ctx context.Context) {
 
 	for {
 		select {
-		case <-c.stopCh:
-			return
 		case <-ctx.Done():
 			return
 		default:
@@ -139,9 +141,30 @@ func (c *SQSConsumer) processMessage(ctx context.Context, msg sqsTypes.Message) 
 		return
 	}
 
+	var rawMap map[string]interface{}
+	if err := json.Unmarshal([]byte(*msg.Body), &rawMap); err != nil {
+		c.logger.Error("malformed message body in sqs", "error", err)
+		return
+	}
+
+	// Check if this is an outbound domain event envelope instead of an inbound wager command
+	if eventType, ok := rawMap["eventType"].(string); ok && eventType != "" {
+		c.logger.Debug("ignoring outbound domain event envelope in command consumer", "eventType", eventType)
+		_ = c.deleteMessage(ctx, msg.ReceiptHandle)
+		return
+	}
+	if eventType, ok := rawMap["type"].(string); ok && (eventType == events.TypeWagerTransactionProcessed ||
+		eventType == events.TypeWagerTransactionRejected ||
+		eventType == events.TypeWalletBalanceChanged ||
+		eventType == events.TypeWagerTransactionPendingReference) {
+		c.logger.Debug("ignoring domain event type in command consumer", "type", eventType)
+		_ = c.deleteMessage(ctx, msg.ReceiptHandle)
+		return
+	}
+
 	var env SQSMessageEnvelope
 	if err := json.Unmarshal([]byte(*msg.Body), &env); err != nil {
-		c.logger.Error("malformed message body in sqs", "error", err)
+		c.logger.Error("malformed wager command body in sqs", "error", err)
 		return
 	}
 
@@ -187,15 +210,15 @@ func (c *SQSConsumer) processMessage(ctx context.Context, msg sqsTypes.Message) 
 
 	// Execute business wager logic
 	_, err = c.wagerUseCase.Execute(ctx, usecase.ProcessWagerInput{
-		ProviderID:                      env.Data.ProviderID,
+		ProviderID:                     env.Data.ProviderID,
 		ExternalTransactionID:          env.Data.ExternalTransactionID,
-		IdempotencyKey:                  env.Data.IdempotencyKey,
-		PlayerID:                        playerUUID,
-		WalletID:                        walletUUID,
-		RoundID:                         env.Data.RoundID,
-		GameID:                          env.Data.GameID,
-		Kind:                            wager.Kind(env.Data.Kind),
-		Money:                           env.Data.Money,
+		IdempotencyKey:                 env.Data.IdempotencyKey,
+		PlayerID:                       playerUUID,
+		WalletID:                       walletUUID,
+		RoundID:                        env.Data.RoundID,
+		GameID:                         env.Data.GameID,
+		Kind:                           wager.Kind(env.Data.Kind),
+		Money:                          env.Data.Money,
 		ReferenceExternalTransactionID: env.Data.ReferenceExternalTransactionID,
 	})
 	if err != nil {

@@ -20,11 +20,11 @@ var (
 )
 
 type WalletUseCase struct {
-	pool        *pgxpool.Pool
-	walletRepo  *repository.WalletRepository
-	ledgerRepo  *repository.LedgerRepository
-	txRepo      *repository.TransactionRepository
-	outboxRepo  *repository.OutboxRepository
+	pool       *pgxpool.Pool
+	walletRepo *repository.WalletRepository
+	ledgerRepo *repository.LedgerRepository
+	txRepo     *repository.TransactionRepository
+	outboxRepo *repository.OutboxRepository
 }
 
 func NewWalletUseCase(

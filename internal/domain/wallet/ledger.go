@@ -105,11 +105,11 @@ func RehydrateLedgerEntry(
 	}
 }
 
-func (l *LedgerEntry) ID() uuid.UUID            { return l.id }
-func (l *LedgerEntry) WalletID() uuid.UUID      { return l.walletID }
-func (l *LedgerEntry) TransactionID() uuid.UUID { return l.transactionID }
-func (l *LedgerEntry) Direction() Direction     { return l.direction }
-func (l *LedgerEntry) Amount() money.Money      { return l.amount }
+func (l *LedgerEntry) ID() uuid.UUID              { return l.id }
+func (l *LedgerEntry) WalletID() uuid.UUID        { return l.walletID }
+func (l *LedgerEntry) TransactionID() uuid.UUID   { return l.transactionID }
+func (l *LedgerEntry) Direction() Direction       { return l.direction }
+func (l *LedgerEntry) Amount() money.Money        { return l.amount }
 func (l *LedgerEntry) BalanceBefore() money.Money { return l.balanceBefore }
 func (l *LedgerEntry) BalanceAfter() money.Money  { return l.balanceAfter }
-func (l *LedgerEntry) CreatedAt() time.Time     { return l.createdAt }
+func (l *LedgerEntry) CreatedAt() time.Time       { return l.createdAt }

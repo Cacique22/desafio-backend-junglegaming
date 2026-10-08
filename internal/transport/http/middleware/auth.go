@@ -24,12 +24,14 @@ var (
 type AuthMiddleware struct {
 	keycloakIssuer string
 	jwtSecret      []byte
+	allowDevTokens bool
 }
 
-func NewAuthMiddleware(issuer string, secret string) *AuthMiddleware {
+func NewAuthMiddleware(issuer string, secret string, allowDevTokens bool) *AuthMiddleware {
 	return &AuthMiddleware{
 		keycloakIssuer: issuer,
 		jwtSecret:      []byte(secret),
+		allowDevTokens: allowDevTokens,
 	}
 }
 
@@ -58,18 +60,20 @@ func (a *AuthMiddleware) Authenticate(next http.Handler) http.Handler {
 
 		if err != nil || !token.Valid {
 			// In test environments or mock setups, check for valid mock tokens
-			if strings.HasPrefix(tokenString, "provider-") {
-				// Allow simple provider token for integration testing
-				providerID := strings.TrimPrefix(tokenString, "provider-")
-				ctx := context.WithValue(r.Context(), ProviderIDContextKey, providerID)
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
-			}
-			if tokenString == "internal-service-token" {
-				ctx := context.WithValue(r.Context(), IsInternalContextKey, true)
-				ctx = context.WithValue(ctx, ProviderIDContextKey, "SYSTEM")
-				next.ServeHTTP(w, r.WithContext(ctx))
-				return
+			if a.allowDevTokens {
+				if strings.HasPrefix(tokenString, "provider-") {
+					// Allow simple provider token for integration testing
+					providerID := strings.TrimPrefix(tokenString, "provider-")
+					ctx := context.WithValue(r.Context(), ProviderIDContextKey, providerID)
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
+				if tokenString == "internal-service-token" {
+					ctx := context.WithValue(r.Context(), IsInternalContextKey, true)
+					ctx = context.WithValue(ctx, ProviderIDContextKey, "SYSTEM")
+					next.ServeHTTP(w, r.WithContext(ctx))
+					return
+				}
 			}
 
 			http.Error(w, `{"error":"invalid or expired token"}`, http.StatusUnauthorized)

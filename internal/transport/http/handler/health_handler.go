@@ -43,8 +43,8 @@ func (h *HealthHandler) Ready(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = json.NewEncoder(w).Encode(map[string]interface{}{
-		"status":     isReady,
-		"postgres":   pgStatus,
-		"timestamp":  time.Now().UTC().Format(time.RFC3339),
+		"status":    isReady,
+		"postgres":  pgStatus,
+		"timestamp": time.Now().UTC().Format(time.RFC3339),
 	})
 }

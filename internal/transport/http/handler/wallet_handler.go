@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -14,12 +15,14 @@ import (
 )
 
 type WalletHandler struct {
+	logger        *slog.Logger
 	walletUseCase *usecase.WalletUseCase
 	ledgerRepo    *repository.LedgerRepository
 }
 
-func NewWalletHandler(walletUseCase *usecase.WalletUseCase, ledgerRepo *repository.LedgerRepository) *WalletHandler {
+func NewWalletHandler(logger *slog.Logger, walletUseCase *usecase.WalletUseCase, ledgerRepo *repository.LedgerRepository) *WalletHandler {
 	return &WalletHandler{
+		logger:        logger,
 		walletUseCase: walletUseCase,
 		ledgerRepo:    ledgerRepo,
 	}
@@ -52,7 +55,8 @@ func (h *WalletHandler) Create(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"wallet already exists for player and currency"}`, http.StatusConflict)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to create wallet", "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -75,7 +79,8 @@ func (h *WalletHandler) GetByID(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"wallet not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to get wallet", "walletId", id, "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 
@@ -101,6 +106,7 @@ func (h *WalletHandler) ListLedger(w http.ResponseWriter, r *http.Request) {
 
 	items, nextCursor, err := h.ledgerRepo.ListByWallet(r.Context(), walletID, limit, cursor)
 	if err != nil {
+		h.logger.Error("failed to list ledger", "walletId", walletID, "error", err)
 		http.Error(w, `{"error":"failed to list ledger"}`, http.StatusInternalServerError)
 		return
 	}
@@ -128,7 +134,8 @@ func (h *WalletHandler) Reconcile(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"error":"wallet not found"}`, http.StatusNotFound)
 			return
 		}
-		http.Error(w, `{"error":"`+err.Error()+`"}`, http.StatusInternalServerError)
+		h.logger.Error("failed to reconcile wallet", "walletId", walletID, "error", err)
+		http.Error(w, `{"error":"internal server error"}`, http.StatusInternalServerError)
 		return
 	}
 

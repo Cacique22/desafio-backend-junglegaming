@@ -18,7 +18,7 @@ type OutboxPublisher struct {
 	queueURL   string
 	batchSize  int
 	pollPeriod time.Duration
-	stopCh     chan struct{}
+	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 }
 
@@ -35,17 +35,20 @@ func NewOutboxPublisher(
 		queueURL:   queueURL,
 		batchSize:  50,
 		pollPeriod: 500 * time.Millisecond,
-		stopCh:     make(chan struct{}),
 	}
 }
 
-func (p *OutboxPublisher) Start(ctx context.Context) {
+func (p *OutboxPublisher) Start() {
+	ctx, cancel := context.WithCancel(context.Background())
+	p.cancel = cancel
 	p.wg.Add(1)
 	go p.run(ctx)
 }
 
 func (p *OutboxPublisher) Stop(ctx context.Context) error {
-	close(p.stopCh)
+	if p.cancel != nil {
+		p.cancel()
+	}
 	c := make(chan struct{})
 	go func() {
 		p.wg.Wait()
@@ -69,8 +72,6 @@ func (p *OutboxPublisher) run(ctx context.Context) {
 
 	for {
 		select {
-		case <-p.stopCh:
-			return
 		case <-ctx.Done():
 			return
 		case <-ticker.C:

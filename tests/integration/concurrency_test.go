@@ -2,7 +2,6 @@ package integration_test
 
 import (
 	"bytes"
-	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -57,6 +56,7 @@ func TestTwoSimultaneousBetsDispute(t *testing.T) {
 	walletID := walletResp.ID
 
 	// 2. Launch two distinct simultaneous bets of 80.00 BRL
+	runID := uuid.New().String()[:8]
 	var wg sync.WaitGroup
 	results := make([]int, 2)
 
@@ -67,7 +67,7 @@ func TestTwoSimultaneousBetsDispute(t *testing.T) {
 			defer wg.Done()
 			betBody, _ := json.Marshal(map[string]interface{}{
 				"providerId":            "provider-a",
-				"externalTransactionId": fmt.Sprintf("tx-race-%d", idx),
+				"externalTransactionId": fmt.Sprintf("tx-race-%s-%d", runID, idx),
 				"playerId":              playerID,
 				"walletId":              walletID,
 				"roundID":               fmt.Sprintf("round-%d", idx),
@@ -82,7 +82,7 @@ func TestTwoSimultaneousBetsDispute(t *testing.T) {
 			r, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(betBody))
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Authorization", "Bearer provider-provider-a")
-			r.Header.Set("Idempotency-Key", fmt.Sprintf("provider-a:tx-race-%d", idx))
+			r.Header.Set("Idempotency-Key", fmt.Sprintf("provider-a:tx-race-%s-%d", runID, idx))
 
 			res, err := client.Do(r)
 			if err == nil {
@@ -179,6 +179,10 @@ func TestFiftySimultaneousIdenticalBets(t *testing.T) {
 
 	// Send 50 identical bets simultaneously with the SAME idempotency key
 	const concurrency = 50
+	runID := uuid.New().String()[:8]
+	extTxID := fmt.Sprintf("tx-ident-%s", runID)
+	idemKey := fmt.Sprintf("provider-a:%s", extTxID)
+
 	var wg sync.WaitGroup
 	statuses := make([]int, concurrency)
 
@@ -189,7 +193,7 @@ func TestFiftySimultaneousIdenticalBets(t *testing.T) {
 			defer wg.Done()
 			betBody, _ := json.Marshal(map[string]interface{}{
 				"providerId":            "provider-a",
-				"externalTransactionId": "tx-identical-replay",
+				"externalTransactionId": extTxID,
 				"playerId":              playerID,
 				"walletId":              walletID,
 				"roundId":               "round-ident",
@@ -204,7 +208,7 @@ func TestFiftySimultaneousIdenticalBets(t *testing.T) {
 			r, _ := http.NewRequest("POST", baseURL+"/wagering/transactions", bytes.NewBuffer(betBody))
 			r.Header.Set("Content-Type", "application/json")
 			r.Header.Set("Authorization", "Bearer provider-provider-a")
-			r.Header.Set("Idempotency-Key", "provider-a:tx-identical-replay")
+			r.Header.Set("Idempotency-Key", idemKey)
 
 			res, err := client.Do(r)
 			if err == nil {
@@ -226,7 +230,10 @@ func TestFiftySimultaneousIdenticalBets(t *testing.T) {
 	// Balance should be exactly 500.00 - 50.00 = 450.00 BRL (only ONE debit occurred!)
 	reqGet, _ := http.NewRequest("GET", baseURL+"/wallets/"+walletID, nil)
 	reqGet.Header.Set("Authorization", "Bearer internal-service-token")
-	respGet, _ := client.Do(reqGet)
+	respGet, err := client.Do(reqGet)
+	if err != nil {
+		t.Fatalf("failed to get wallet: %v", err)
+	}
 	defer respGet.Body.Close()
 
 	var getWalletResp struct {

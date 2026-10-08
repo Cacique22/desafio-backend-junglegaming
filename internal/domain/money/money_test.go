@@ -61,6 +61,8 @@ func TestMoney_Parse_Invalid(t *testing.T) {
 		{"invalid currency lowercase", "10.00", "brl"},
 		{"invalid currency length", "10.00", "BRLX"},
 		{"empty currency", "10.00", ""},
+		{"unicode arabic digits", "\u0662\u0665.00", "BRL"},
+		{"unicode accented currency", "10.00", "BÉL"},
 	}
 
 	for _, tt := range invalidInputs {

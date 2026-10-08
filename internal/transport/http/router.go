@@ -34,12 +34,10 @@ func NewRouter(
 		protected.Group(func(internal chi.Router) {
 			internal.Use(authMiddleware.RequireInternal)
 			internal.Post("/wallets", walletHandler.Create)
+			internal.Get("/wallets/{walletId}", walletHandler.GetByID)
+			internal.Get("/wallets/{walletId}/ledger", walletHandler.ListLedger)
+			internal.Post("/wallets/{walletId}/reconciliation", walletHandler.Reconcile)
 		})
-
-		// Wallet endpoints
-		protected.Get("/wallets/{walletId}", walletHandler.GetByID)
-		protected.Get("/wallets/{walletId}/ledger", walletHandler.ListLedger)
-		protected.Post("/wallets/{walletId}/reconciliation", walletHandler.Reconcile)
 
 		// Wagering transaction endpoints
 		protected.Post("/wagering/transactions", wagerHandler.Process)

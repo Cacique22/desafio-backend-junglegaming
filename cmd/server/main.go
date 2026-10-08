@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsConfig "github.com/aws/aws-sdk-go-v2/config"
@@ -105,7 +106,7 @@ var UseCaseModule = fx.Module("usecase",
 
 var AuthModule = fx.Module("auth",
 	fx.Provide(func(cfg config.AppConfig) *middleware.AuthMiddleware {
-		return middleware.NewAuthMiddleware(cfg.KeycloakIssuer, cfg.JWTSecret)
+		return middleware.NewAuthMiddleware(cfg.KeycloakIssuer, cfg.JWTSecret, cfg.AllowDevTokens)
 	}),
 )
 
@@ -116,8 +117,12 @@ var HTTPModule = fx.Module("http",
 	fx.Provide(transportHttp.NewRouter),
 	fx.Provide(func(handler http.Handler, cfg config.AppConfig) *http.Server {
 		return &http.Server{
-			Addr:    fmt.Sprintf(":%d", cfg.Port),
-			Handler: handler,
+			Addr:              fmt.Sprintf(":%d", cfg.Port),
+			Handler:           handler,
+			ReadHeaderTimeout: 5 * time.Second,
+			ReadTimeout:       15 * time.Second,
+			WriteTimeout:      15 * time.Second,
+			IdleTimeout:       60 * time.Second,
 		}
 	}),
 	fx.Invoke(func(lc fx.Lifecycle, server *http.Server, logger *slog.Logger) {
@@ -145,11 +150,11 @@ var HTTPModule = fx.Module("http",
 
 var WorkerModule = fx.Module("workers",
 	fx.Provide(func(logger *slog.Logger, outboxRepo *repository.OutboxRepository, sqsClient *sqs.Client, cfg config.AppConfig) *worker.OutboxPublisher {
-		return worker.NewOutboxPublisher(logger, outboxRepo, sqsClient, cfg.SQSQueueURL)
+		return worker.NewOutboxPublisher(logger, outboxRepo, sqsClient, cfg.SQSOutboxQueueURL)
 	}),
 	fx.Provide(worker.NewPendingReferenceResolver),
 	fx.Provide(func(logger *slog.Logger, pool *pgxpool.Pool, inboxRepo *repository.InboxRepository, wagerUC *usecase.WagerUseCase, sqsClient *sqs.Client, cfg config.AppConfig) *worker.SQSConsumer {
-		return worker.NewSQSConsumer(logger, pool, inboxRepo, wagerUC, sqsClient, cfg.SQSQueueURL)
+		return worker.NewSQSConsumer(logger, pool, inboxRepo, wagerUC, sqsClient, cfg.SQSCommandQueueURL)
 	}),
 	fx.Invoke(func(
 		lc fx.Lifecycle,
@@ -159,9 +164,9 @@ var WorkerModule = fx.Module("workers",
 	) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
-				publisher.Start(ctx)
-				resolver.Start(ctx)
-				consumer.Start(ctx)
+				publisher.Start()
+				resolver.Start()
+				consumer.Start()
 				return nil
 			},
 			OnStop: func(ctx context.Context) error {

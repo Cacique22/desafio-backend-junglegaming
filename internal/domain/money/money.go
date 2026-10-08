@@ -6,16 +6,15 @@ import (
 	"fmt"
 	"math"
 	"strings"
-	"unicode"
 )
 
 var (
-	ErrInvalidCurrency      = errors.New("currency must be a 3-letter uppercase ISO 4217 code")
-	ErrCurrencyMismatch     = errors.New("currency mismatch between money values")
-	ErrInvalidAmountFormat  = errors.New("amount must be a valid decimal string with exactly or up to 2 decimal places")
-	ErrNegativeNotAllowed   = errors.New("negative amount is not allowed in external financial input")
-	ErrAmountOverflow       = errors.New("arithmetic operation caused int64 overflow")
-	ErrInvalidValue         = errors.New("amount cannot be empty, NaN, Infinity or scientific notation")
+	ErrInvalidCurrency     = errors.New("currency must be a 3-letter uppercase ISO 4217 code")
+	ErrCurrencyMismatch    = errors.New("currency mismatch between money values")
+	ErrInvalidAmountFormat = errors.New("amount must be a valid decimal string with exactly or up to 2 decimal places")
+	ErrNegativeNotAllowed  = errors.New("negative amount is not allowed in external financial input")
+	ErrAmountOverflow      = errors.New("arithmetic operation caused int64 overflow")
+	ErrInvalidValue        = errors.New("amount cannot be empty, NaN, Infinity or scientific notation")
 )
 
 // Money is an immutable value object representing a monetary amount in cents (minimal units)
@@ -102,7 +101,7 @@ func Parse(amountStr string, currency string, allowNegative bool) (Money, error)
 		intPartStr = "0"
 	}
 	for _, ch := range intPartStr {
-		if !unicode.IsDigit(ch) {
+		if ch < '0' || ch > '9' {
 			return Money{}, ErrInvalidAmountFormat
 		}
 	}
@@ -112,7 +111,7 @@ func Parse(amountStr string, currency string, allowNegative bool) (Money, error)
 		return Money{}, ErrInvalidAmountFormat
 	}
 	for _, ch := range decPartStr {
-		if !unicode.IsDigit(ch) {
+		if ch < '0' || ch > '9' {
 			return Money{}, ErrInvalidAmountFormat
 		}
 	}
@@ -300,7 +299,7 @@ func validateCurrency(c string) error {
 		return ErrInvalidCurrency
 	}
 	for _, r := range c {
-		if !unicode.IsUpper(r) || !unicode.IsLetter(r) {
+		if r < 'A' || r > 'Z' {
 			return ErrInvalidCurrency
 		}
 	}

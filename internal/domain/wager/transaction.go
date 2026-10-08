@@ -1,6 +1,7 @@
 package wager
 
 import (
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -9,16 +10,16 @@ import (
 )
 
 var (
-	ErrInvalidKind                  = errors.New("invalid transaction kind")
-	ErrInvalidStatusTransition      = errors.New("invalid status transition")
-	ErrTerminalStateImmutable       = errors.New("terminal state is immutable and cannot be transitioned")
-	ErrOpeningNotAllowedExternal    = errors.New("OPENING is an internal operation and cannot be submitted externally")
-	ErrZeroAmountNotAllowedForKind  = errors.New("amount must be greater than zero for this transaction kind")
-	ErrLossMustBeZero               = errors.New("LOSS must have amount equal to 0.00")
-	ErrMissingReferenceForReversal  = errors.New("referenceExternalTransactionId is required for REFUND and ROLLBACK")
-	ErrIdempotencyConflict          = errors.New("idempotency key reused with conflicting payload")
-	ErrDoubleReversal               = errors.New("transaction has already been reversed by this reversal type")
-	ErrReferenceMismatch            = errors.New("reversal does not match referenced transaction provider, player, wallet or round")
+	ErrInvalidKind                 = errors.New("invalid transaction kind")
+	ErrInvalidStatusTransition     = errors.New("invalid status transition")
+	ErrTerminalStateImmutable      = errors.New("terminal state is immutable and cannot be transitioned")
+	ErrOpeningNotAllowedExternal   = errors.New("OPENING is an internal operation and cannot be submitted externally")
+	ErrZeroAmountNotAllowedForKind = errors.New("amount must be greater than zero for this transaction kind")
+	ErrLossMustBeZero              = errors.New("LOSS must have amount equal to 0.00")
+	ErrMissingReferenceForReversal = errors.New("referenceExternalTransactionId is required for REFUND and ROLLBACK")
+	ErrIdempotencyConflict         = errors.New("idempotency key reused with conflicting payload")
+	ErrDoubleReversal              = errors.New("transaction has already been reversed by this reversal type")
+	ErrReferenceMismatch           = errors.New("reversal does not match referenced transaction provider, player, wallet or round")
 )
 
 type Kind string
@@ -49,35 +50,35 @@ func (s Status) IsTerminal() bool {
 type FailureCode string
 
 const (
-	FailureCodeInsufficientFunds     FailureCode = "INSUFFICIENT_FUNDS"
-	FailureCodeReferenceNotFound     FailureCode = "REFERENCE_NOT_FOUND"
-	FailureCodeReferenceExpired      FailureCode = "REFERENCE_EXPIRED"
-	FailureCodeDoubleReversal        FailureCode = "DOUBLE_REVERSAL"
-	FailureCodeInvalidReversalMatch  FailureCode = "INVALID_REVERSAL_MATCH"
-	FailureCodeInternalError         FailureCode = "INTERNAL_ERROR"
-	FailureCodeCurrencyMismatch      FailureCode = "CURRENCY_MISMATCH"
+	FailureCodeInsufficientFunds    FailureCode = "INSUFFICIENT_FUNDS"
+	FailureCodeReferenceNotFound    FailureCode = "REFERENCE_NOT_FOUND"
+	FailureCodeReferenceExpired     FailureCode = "REFERENCE_EXPIRED"
+	FailureCodeDoubleReversal       FailureCode = "DOUBLE_REVERSAL"
+	FailureCodeInvalidReversalMatch FailureCode = "INVALID_REVERSAL_MATCH"
+	FailureCodeInternalError        FailureCode = "INTERNAL_ERROR"
+	FailureCodeCurrencyMismatch     FailureCode = "CURRENCY_MISMATCH"
 )
 
 // Transaction represents a financial wagering operation.
 type Transaction struct {
-	id                              uuid.UUID
-	providerID                      string
+	id                             uuid.UUID
+	providerID                     string
 	externalTransactionID          string
-	idempotencyKey                  string
-	payloadHash                     string
-	walletID                        uuid.UUID
-	playerID                        uuid.UUID
-	roundID                         string
-	gameID                          string
-	kind                            Kind
-	money                           money.Money
+	idempotencyKey                 string
+	payloadHash                    string
+	walletID                       uuid.UUID
+	playerID                       uuid.UUID
+	roundID                        string
+	gameID                         string
+	kind                           Kind
+	money                          money.Money
 	referenceExternalTransactionID *string
-	resolvedReferenceID             *uuid.UUID
-	status                          Status
-	failureCode                     *FailureCode
-	balanceSnapshot                 *money.Money
-	createdAt                       time.Time
-	updatedAt                       time.Time
+	resolvedReferenceID            *uuid.UUID
+	status                         Status
+	failureCode                    *FailureCode
+	balanceSnapshot                *money.Money
+	createdAt                      time.Time
+	updatedAt                      time.Time
 }
 
 // NewExternalTransaction creates an external wager transaction initiated via HTTP or SQS.
@@ -120,21 +121,21 @@ func NewExternalTransaction(
 
 	now := time.Now().UTC()
 	return &Transaction{
-		id:                              uuid.New(),
-		providerID:                      providerID,
+		id:                             uuid.New(),
+		providerID:                     providerID,
 		externalTransactionID:          externalTransactionID,
-		idempotencyKey:                  idempotencyKey,
-		payloadHash:                     payloadHash,
-		walletID:                        walletID,
-		playerID:                        playerID,
-		roundID:                         roundID,
-		gameID:                          gameID,
-		kind:                            kind,
-		money:                           m,
+		idempotencyKey:                 idempotencyKey,
+		payloadHash:                    payloadHash,
+		walletID:                       walletID,
+		playerID:                       playerID,
+		roundID:                        roundID,
+		gameID:                         gameID,
+		kind:                           kind,
+		money:                          m,
 		referenceExternalTransactionID: refExternalID,
-		status:                          StatusPending,
-		createdAt:                       now,
-		updatedAt:                       now,
+		status:                         StatusPending,
+		createdAt:                      now,
+		updatedAt:                      now,
 	}, nil
 }
 
@@ -147,21 +148,21 @@ func NewInternalOpening(
 	now := time.Now().UTC()
 	snapshot := m
 	return &Transaction{
-		id:               uuid.New(),
-		providerID:       "SYSTEM",
+		id:                    uuid.New(),
+		providerID:            "SYSTEM",
 		externalTransactionID: "opening-" + walletID.String(),
-		idempotencyKey:   "opening-" + walletID.String(),
-		payloadHash:      "INTERNAL_OPENING",
-		walletID:         walletID,
-		playerID:         playerID,
-		roundID:          "OPENING",
-		gameID:           "SYSTEM",
-		kind:             KindOpening,
-		money:            m,
-		status:           StatusProcessed,
-		balanceSnapshot:  &snapshot,
-		createdAt:        now,
-		updatedAt:        now,
+		idempotencyKey:        "opening-" + walletID.String(),
+		payloadHash:           "INTERNAL_OPENING",
+		walletID:              walletID,
+		playerID:              playerID,
+		roundID:               "OPENING",
+		gameID:                "SYSTEM",
+		kind:                  KindOpening,
+		money:                 m,
+		status:                StatusProcessed,
+		balanceSnapshot:       &snapshot,
+		createdAt:             now,
+		updatedAt:             now,
 	}, nil
 }
 
@@ -187,24 +188,24 @@ func Rehydrate(
 	updatedAt time.Time,
 ) *Transaction {
 	return &Transaction{
-		id:                              id,
-		providerID:                      providerID,
+		id:                             id,
+		providerID:                     providerID,
 		externalTransactionID:          externalTransactionID,
-		idempotencyKey:                  idempotencyKey,
-		payloadHash:                     payloadHash,
-		walletID:                        walletID,
-		playerID:                        playerID,
-		roundID:                         roundID,
-		gameID:                          gameID,
-		kind:                            kind,
-		money:                           m,
+		idempotencyKey:                 idempotencyKey,
+		payloadHash:                    payloadHash,
+		walletID:                       walletID,
+		playerID:                       playerID,
+		roundID:                        roundID,
+		gameID:                         gameID,
+		kind:                           kind,
+		money:                          m,
 		referenceExternalTransactionID: refExternalID,
-		resolvedReferenceID:             resolvedRefID,
-		status:                          status,
-		failureCode:                     failureCode,
-		balanceSnapshot:                 balanceSnapshot,
-		createdAt:                       createdAt,
-		updatedAt:                       updatedAt,
+		resolvedReferenceID:            resolvedRefID,
+		status:                         status,
+		failureCode:                    failureCode,
+		balanceSnapshot:                balanceSnapshot,
+		createdAt:                      createdAt,
+		updatedAt:                      updatedAt,
 	}
 }
 
@@ -256,22 +257,66 @@ func (t *Transaction) SetResolvedReference(refID uuid.UUID) {
 	t.resolvedReferenceID = &refID
 }
 
-func (t *Transaction) ID() uuid.UUID                               { return t.id }
-func (t *Transaction) ProviderID() string                          { return t.providerID }
-func (t *Transaction) ExternalTransactionID() string               { return t.externalTransactionID }
-func (t *Transaction) IdempotencyKey() string                      { return t.idempotencyKey }
-func (t *Transaction) PayloadHash() string                         { return t.payloadHash }
-func (t *Transaction) WalletID() uuid.UUID                         { return t.walletID }
-func (t *Transaction) PlayerID() uuid.UUID                         { return t.playerID }
-func (t *Transaction) RoundID() string                             { return t.roundID }
-func (t *Kind) String() string                                     { return string(*t) }
-func (t *Transaction) Kind() Kind                                  { return t.kind }
-func (t *Transaction) GameID() string                              { return t.gameID }
-func (t *Transaction) Money() money.Money                          { return t.money }
-func (t *Transaction) ReferenceExternalTransactionID() *string     { return t.referenceExternalTransactionID }
-func (t *Transaction) ResolvedReferenceID() *uuid.UUID             { return t.resolvedReferenceID }
-func (t *Transaction) Status() Status                              { return t.status }
-func (t *Transaction) FailureCode() *FailureCode                   { return t.failureCode }
-func (t *Transaction) BalanceSnapshot() *money.Money               { return t.balanceSnapshot }
-func (t *Transaction) CreatedAt() time.Time                        { return t.createdAt }
-func (t *Transaction) UpdatedAt() time.Time                        { return t.updatedAt }
+func (t *Transaction) ID() uuid.UUID                 { return t.id }
+func (t *Transaction) ProviderID() string            { return t.providerID }
+func (t *Transaction) ExternalTransactionID() string { return t.externalTransactionID }
+func (t *Transaction) IdempotencyKey() string        { return t.idempotencyKey }
+func (t *Transaction) PayloadHash() string           { return t.payloadHash }
+func (t *Transaction) WalletID() uuid.UUID           { return t.walletID }
+func (t *Transaction) PlayerID() uuid.UUID           { return t.playerID }
+func (t *Transaction) RoundID() string               { return t.roundID }
+func (t *Kind) String() string                       { return string(*t) }
+func (t *Transaction) Kind() Kind                    { return t.kind }
+func (t *Transaction) GameID() string                { return t.gameID }
+func (t *Transaction) Money() money.Money            { return t.money }
+func (t *Transaction) ReferenceExternalTransactionID() *string {
+	return t.referenceExternalTransactionID
+}
+func (t *Transaction) ResolvedReferenceID() *uuid.UUID { return t.resolvedReferenceID }
+func (t *Transaction) Status() Status                  { return t.status }
+func (t *Transaction) FailureCode() *FailureCode       { return t.failureCode }
+func (t *Transaction) BalanceSnapshot() *money.Money   { return t.balanceSnapshot }
+func (t *Transaction) CreatedAt() time.Time            { return t.createdAt }
+func (t *Transaction) UpdatedAt() time.Time            { return t.updatedAt }
+
+// MarshalJSON provides JSON serialization of Transaction.
+func (t Transaction) MarshalJSON() ([]byte, error) {
+	type Alias struct {
+		ID                             uuid.UUID    `json:"id"`
+		ProviderID                     string       `json:"providerId"`
+		ExternalTransactionID          string       `json:"externalTransactionId"`
+		IdempotencyKey                 string       `json:"idempotencyKey"`
+		WalletID                       uuid.UUID    `json:"walletId"`
+		PlayerID                       uuid.UUID    `json:"playerId"`
+		RoundID                        string       `json:"roundId"`
+		GameID                         string       `json:"gameId"`
+		Kind                           Kind         `json:"kind"`
+		Money                          money.Money  `json:"money"`
+		ReferenceExternalTransactionID *string      `json:"referenceExternalTransactionId,omitempty"`
+		ResolvedReferenceID            *uuid.UUID   `json:"resolvedReferenceId,omitempty"`
+		Status                         Status       `json:"status"`
+		FailureCode                    *FailureCode `json:"failureCode,omitempty"`
+		BalanceSnapshot                *money.Money `json:"balanceSnapshot,omitempty"`
+		CreatedAt                      time.Time    `json:"createdAt"`
+		UpdatedAt                      time.Time    `json:"updatedAt"`
+	}
+	return json.Marshal(Alias{
+		ID:                             t.id,
+		ProviderID:                     t.providerID,
+		ExternalTransactionID:          t.externalTransactionID,
+		IdempotencyKey:                 t.idempotencyKey,
+		WalletID:                       t.walletID,
+		PlayerID:                       t.playerID,
+		RoundID:                        t.roundID,
+		GameID:                         t.gameID,
+		Kind:                           t.kind,
+		Money:                          t.money,
+		ReferenceExternalTransactionID: t.referenceExternalTransactionID,
+		ResolvedReferenceID:            t.resolvedReferenceID,
+		Status:                         t.status,
+		FailureCode:                    t.failureCode,
+		BalanceSnapshot:                t.balanceSnapshot,
+		CreatedAt:                      t.createdAt,
+		UpdatedAt:                      t.updatedAt,
+	})
+}

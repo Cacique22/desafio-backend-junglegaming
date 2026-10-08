@@ -127,6 +127,19 @@ func (r *TransactionRepository) FindByIdempotencyKey(ctx context.Context, key st
 	return r.scanRow(r.pool.QueryRow(ctx, query, key))
 }
 
+// FindByIdempotencyKeyTx retrieves an existing transaction within an active SQL transaction.
+func (r *TransactionRepository) FindByIdempotencyKeyTx(ctx context.Context, tx pgx.Tx, key string) (*wager.Transaction, error) {
+	query := `
+		SELECT id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+		       wallet_id, player_id, round_id, game_id, kind, amount_cents, currency,
+		       reference_external_transaction_id, resolved_reference_id, status, failure_code,
+		       balance_snapshot_cents, created_at, updated_at
+		FROM wager_transactions
+		WHERE idempotency_key = $1
+	`
+	return r.scanRow(tx.QueryRow(ctx, query, key))
+}
+
 // FindByProviderAndExternalID retrieves a transaction by provider and external transaction ID.
 func (r *TransactionRepository) FindByProviderAndExternalID(ctx context.Context, providerID, externalID string) (*wager.Transaction, error) {
 	query := `
@@ -138,6 +151,19 @@ func (r *TransactionRepository) FindByProviderAndExternalID(ctx context.Context,
 		WHERE provider_id = $1 AND external_transaction_id = $2
 	`
 	return r.scanRow(r.pool.QueryRow(ctx, query, providerID, externalID))
+}
+
+// FindByProviderAndExternalIDTx retrieves a transaction by provider and external ID within an active SQL transaction.
+func (r *TransactionRepository) FindByProviderAndExternalIDTx(ctx context.Context, tx pgx.Tx, providerID, externalID string) (*wager.Transaction, error) {
+	query := `
+		SELECT id, provider_id, external_transaction_id, idempotency_key, payload_hash,
+		       wallet_id, player_id, round_id, game_id, kind, amount_cents, currency,
+		       reference_external_transaction_id, resolved_reference_id, status, failure_code,
+		       balance_snapshot_cents, created_at, updated_at
+		FROM wager_transactions
+		WHERE provider_id = $1 AND external_transaction_id = $2
+	`
+	return r.scanRow(tx.QueryRow(ctx, query, providerID, externalID))
 }
 
 // FindByID retrieves a transaction by its internal UUID.
@@ -200,23 +226,19 @@ func (r *TransactionRepository) FindPendingReferences(ctx context.Context, limit
 	return txs, nil
 }
 
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
 func (r *TransactionRepository) scanRow(row pgx.Row) (*wager.Transaction, error) {
 	var (
-		id, walletID, playerID           uuid.UUID
-		providerID, extTxID, idemKey     string
-		payloadHash                      string
-		roundID, gameID, kindStr, curr   string
-		amountCents                      int64
-		refExternalID                    *string
-		resolvedRefID                    *uuid.UUID
-		statusStr                        string
-		failCodeStr                      *string
-		balanceSnapshotCents             *int64
-		createdAt, updatedAt             time.Time
+		id, walletID, playerID         uuid.UUID
+		providerID, extTxID, idemKey   string
+		payloadHash                    string
+		roundID, gameID, kindStr, curr string
+		amountCents                    int64
+		refExternalID                  *string
+		resolvedRefID                  *uuid.UUID
+		statusStr                      string
+		failCodeStr                    *string
+		balanceSnapshotCents           *int64
+		createdAt, updatedAt           time.Time
 	)
 
 	err := row.Scan(

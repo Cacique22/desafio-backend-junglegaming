@@ -47,27 +47,27 @@ func NewEnvelope(eventType string, aggregateID string, correlationID string, cau
 
 // WalletBalanceChangedPayload represents the mandatory payload for balance changes.
 type WalletBalanceChangedPayload struct {
-	WalletID      string       `json:"walletId"`
-	TransactionID string       `json:"transactionId"`
-	Direction     string       `json:"direction"`
-	Money         money.Money  `json:"money"`
-	BalanceBefore string       `json:"balanceBefore"`
-	BalanceAfter  string       `json:"balanceAfter"`
-	WalletVersion int64        `json:"walletVersion"`
+	WalletID      string      `json:"walletId"`
+	TransactionID string      `json:"transactionId"`
+	Direction     string      `json:"direction"`
+	Money         money.Money `json:"money"`
+	BalanceBefore string      `json:"balanceBefore"`
+	BalanceAfter  string      `json:"balanceAfter"`
+	WalletVersion int64       `json:"walletVersion"`
 }
 
 // WagerTransactionProcessedPayload represents the payload when a wager completes.
 type WagerTransactionProcessedPayload struct {
-	TransactionID string       `json:"transactionId"`
-	ProviderID    string       `json:"providerId"`
-	PlayerID      string       `json:"playerId"`
-	WalletID      string       `json:"walletId"`
-	RoundID       string       `json:"roundId"`
-	GameID        string       `json:"gameId"`
-	Kind          string       `json:"kind"`
-	Money         money.Money  `json:"money"`
-	Status        string       `json:"status"`
-	FinalBalance  *string      `json:"finalBalance,omitempty"`
+	TransactionID string      `json:"transactionId"`
+	ProviderID    string      `json:"providerId"`
+	PlayerID      string      `json:"playerId"`
+	WalletID      string      `json:"walletId"`
+	RoundID       string      `json:"roundId"`
+	GameID        string      `json:"gameId"`
+	Kind          string      `json:"kind"`
+	Money         money.Money `json:"money"`
+	Status        string      `json:"status"`
+	FinalBalance  *string     `json:"finalBalance,omitempty"`
 }
 
 // WagerTransactionRejectedPayload represents the payload when a wager is rejected.

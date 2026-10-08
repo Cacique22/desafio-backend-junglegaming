@@ -85,6 +85,7 @@ func (r *OutboxRepository) ClaimPending(ctx context.Context, batchSize int) ([]O
 	defer rows.Close()
 
 	var items []OutboxItem
+	var ids []uuid.UUID
 	for rows.Next() {
 		var item OutboxItem
 		if err := rows.Scan(
@@ -94,6 +95,19 @@ func (r *OutboxRepository) ClaimPending(ctx context.Context, batchSize int) ([]O
 			return nil, err
 		}
 		items = append(items, item)
+		ids = append(ids, item.ID)
+	}
+	rows.Close()
+
+	if len(ids) > 0 {
+		leaseQuery := `
+			UPDATE outbox
+			SET next_retry_at = NOW() + INTERVAL '30 seconds'
+			WHERE id = ANY($1)
+		`
+		if _, err := tx.Exec(ctx, leaseQuery, ids); err != nil {
+			return nil, fmt.Errorf("failed to lease claimed outbox items: %w", err)
+		}
 	}
 
 	if err := tx.Commit(ctx); err != nil {
