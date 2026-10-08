@@ -24,7 +24,7 @@ docker compose up --build
 
 O compose subirá automaticamente:
 * **PostgreSQL 16:** na porta `5432` com migrations aplicadas.
-* **LocalStack:** na porta `4566` com as filas `wager-transactions.fifo` e `wager-transactions-dlq.fifo` criadas.
+* **LocalStack:** na porta `4566` com as filas FIFO segregadas (`wager-transactions.fifo` e `wager-events.fifo`) e suas respectivas DLQs.
 * **Keycloak:** na porta `8085` com o realm `jungle` e clientes pré-configurados.
 * **App 1:** na porta `8080`.
 * **App 2:** na porta `8081` (para testes de cluster e concorrência).

@@ -1,6 +1,5 @@
 {
   "name": "Jungle Gaming - Distributed Wagering Engine",
   "description": "Distributed betting transactions processing engine in Go with Uber Fx, PostgreSQL, Keycloak OIDC, and AWS SQS FIFO.",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "requestFramePermissions": []
 }

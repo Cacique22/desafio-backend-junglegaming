@@ -729,7 +729,7 @@ FOR EACH ROW EXECUTE FUNCTION prevent_ledger_modification();`}</pre>
                 Estrutura Completa dos Arquivos Criados
               </h2>
               <p className="text-xs text-slate-400 mb-6">
-                Todos os arquivos do projeto em Go foram gerados no repositório com padrão de produção para serem clonados e executados via Docker Compose:
+                Estrutura de arquivos e organização modular do motor distribuído em Go:
               </p>
 
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-mono">
